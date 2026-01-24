@@ -1,0 +1,22 @@
+{
+    "python": "D:\\AI_Generated\\ComfyUI-Zluda\\venv\\Scripts\\python.exe",
+    "out": "",
+    "out_mode": "custom",
+    "up_mode": "custom",
+    "token": "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",
+    "r_gguf": "",
+    "d_gguf": "",
+    "r_fp8": "",
+    "d_fp8": "",
+    "clean": "per_model",
+    "shut": false,
+    "q_gen": [
+        "Q4_K_S"
+    ],
+    "q_up": [
+        "Q4_K_S"
+    ],
+    "q_keep": [],
+    "k_dequant": false,
+    "k_convert": false
+}
