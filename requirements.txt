@@ -1,0 +1,8 @@
+safetensors
+huggingface_hub
+tqdm
+sentencepiece
+numpy
+gguf
+prompt_toolkit
+requests
