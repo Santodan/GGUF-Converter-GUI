@@ -15,6 +15,7 @@ import shutil
 import urllib.request
 from datetime import datetime
 import math
+import importlib.util
 
 # --- 0. AUTO-RESTART IN VENV ---
 def check_and_restart_in_venv():
@@ -44,281 +45,293 @@ def check_and_restart_in_venv():
 
 check_and_restart_in_venv()
 
+def ensure_dependencies():
+    """Checks for required packages and installs them if missing."""
+    dependencies = {
+        "safetensors": "safetensors",
+        "huggingface_hub": "huggingface_hub",
+        "tqdm": "tqdm",
+        "sentencepiece": "sentencepiece",
+        "numpy==1.26.4": "numpy",
+        "gguf": "gguf",
+        "prompt_toolkit": "prompt_toolkit",
+        "requests": "requests",
+        "torch": "torch"
+    }
+    missing_or_wrong = []
+    for pkg_pip, mod_name in dependencies.items():
+        spec = importlib.util.find_spec(mod_name)
+        if spec is None:
+            missing_or_wrong.append(pkg_pip)
+        else:
+            if "numpy==1.26.4" in pkg_pip:
+                try:
+                    import numpy
+                    if numpy.__version__ != "1.26.4":
+                        missing_or_wrong.append(pkg_pip)
+                except: missing_or_wrong.append(pkg_pip)
+    if missing_or_wrong:
+        print(f"[INFO] Installing dependencies: {', '.join(missing_or_wrong)}...")
+        try:
+            subprocess.check_call([sys.executable, "-m", "pip", "install"] + missing_or_wrong)
+        except Exception as e:
+            print(f"[ERROR] Pip failed: {e}")
+
+ensure_dependencies()
+
 # --- 1. DEPENDENCY MANAGER ---
 class DependencyManager:
     """Checks for, downloads, and compiles required tools."""
-    
     SOURCES = {
         "dequantize_fp8v2.py": "https://raw.githubusercontent.com/Santodan/GGUF-Converter-GUI/refs/heads/main/PyTorch/dequantize_fp8v2.py",
-        "convert.py": "https://raw.githubusercontent.com/city96/ComfyUI-GGUF/main/tools/convert.py",
-        "fix_5d_tensors.py": "https://raw.githubusercontent.com/city96/ComfyUI-GGUF/main/tools/fix_5d_tensors.py",
-        "lcpp.patch": "https://raw.githubusercontent.com/city96/ComfyUI-GGUF/main/tools/lcpp.patch"
-        "upload_hf": "https://raw.githubusercontent.com/Santodan/GGUF-Converter-GUI/refs/heads/main/PyTorch/upload_to_hf.py"
+        "convert.py": "https://raw.githubusercontent.com/city96/ComfyUI-GGUF/refs/heads/auto_convert/tools/convert.py",
+        "lcpp.patch": "https://raw.githubusercontent.com/city96/ComfyUI-GGUF/refs/heads/auto_convert/tools/lcpp.patch",
+        "fix_5d_tensors.py": "https://raw.githubusercontent.com/city96/ComfyUI-GGUF/refs/heads/auto_convert/tools/fix_5d_tensors.py",
+        "upload_to_hf.py": "https://raw.githubusercontent.com/Santodan/GGUF-Converter-GUI/refs/heads/main/PyTorch/upload_to_hf.py"
     }
-    
+
     @staticmethod
     def check_and_setup(logger_callback):
         script_dir = os.path.dirname(os.path.abspath(__file__))
-        
-        # 1. Download Python Scripts
         for tool, url in DependencyManager.SOURCES.items():
-            if tool == "lcpp.patch": continue 
             path = os.path.join(script_dir, tool)
             if not os.path.exists(path):
-                logger_callback(f"[SETUP] Tool missing. Downloading {tool}...")
-                try:
-                    urllib.request.urlretrieve(url, path)
-                    logger_callback(f"[SETUP] Successfully downloaded {tool}")
-                except Exception as e:
-                    logger_callback(f"[ERROR] Failed to download {tool}: {e}")
+                logger_callback(f"[SETUP] Downloading {tool}...")
+                try: urllib.request.urlretrieve(url, path)
+                except Exception as e: logger_callback(f"[ERROR] Download failed: {e}")
 
-        # 2. Check llama-quantize
         binary_name = "llama-quantize.exe" if platform.system() == "Windows" else "llama-quantize"
-        binary_path = os.path.join(script_dir, binary_name)
-        
-        if not os.path.exists(binary_path):
-            res = messagebox.askyesno("Setup", f"{binary_name} not found.\n\nWould you like to build it from source?")
-            if res:
-                # Run build in a thread so UI doesn't freeze
+        if not os.path.exists(os.path.join(script_dir, binary_name)):
+            if messagebox.askyesno("Setup", f"{binary_name} not found. Build it?"):
                 threading.Thread(target=DependencyManager.build_llama_cpp, args=(script_dir, logger_callback), daemon=True).start()
 
     @staticmethod
     def build_llama_cpp(target_dir, logger_callback):
         original_cwd = os.getcwd()
         temp_build_dir = os.path.join(target_dir, "llama_cpp_build_temp")
+        
         try:
-            # Check requirements
-            subprocess.run(["git", "--version"], check=True, capture_output=True)
-            subprocess.run(["cmake", "--version"], check=True, capture_output=True)
-            
-            logger_callback("[BUILD] Preparing build workspace...")
-            if os.path.exists(temp_build_dir): shutil.rmtree(temp_build_dir)
+            if os.path.exists(temp_build_dir):
+                shutil.rmtree(temp_build_dir)
             os.makedirs(temp_build_dir)
             
-            # Download Patch
             patch_path = os.path.join(temp_build_dir, "lcpp.patch")
-            logger_callback("[BUILD] Downloading lcpp.patch...")
-            urllib.request.urlretrieve(DependencyManager.SOURCES["lcpp.patch"], patch_path)
+            urllib.request.urlretrieve(
+                "https://raw.githubusercontent.com/city96/ComfyUI-GGUF/refs/heads/auto_convert/tools/lcpp.patch",
+                patch_path
+            )
             
-            # Clone and checkout
             os.chdir(temp_build_dir)
-            logger_callback("[BUILD] Cloning llama.cpp repository...")
             subprocess.run(["git", "clone", "https://github.com/ggerganov/llama.cpp.git", "source"], check=True)
             os.chdir("source")
             
-            logger_callback("[BUILD] Checking out tag b3962...")
+            # Use the exact tag your original code had
             subprocess.run(["git", "checkout", "tags/b3962"], check=True)
-            
-            # Apply Patch
-            logger_callback("[BUILD] Applying patch...")
             subprocess.run(["git", "apply", patch_path], check=True)
-
-            # Apply log.cpp Chrono fix for Windows VS 2022
-            if platform.system() == "Windows":
-                log_cpp_path = os.path.join("common", "log.cpp")
-                if os.path.exists(log_cpp_path):
-                    logger_callback("[BUILD] Applying VS2022 chrono fix to log.cpp...")
-                    with open(log_cpp_path, 'r', encoding='utf-8') as f:
-                        lines = f.readlines()
-                    new_content = []
-                    found = False
+            
+            # ── Apply the exact log.cpp patch you want ───────────────────────────────
+            log_cpp = os.path.join("common", "log.cpp")
+            if os.path.exists(log_cpp):
+                with open(log_cpp, 'r', encoding='utf-8') as f:
+                    lines = f.readlines()
+                
+                with open(log_cpp, 'w', encoding='utf-8') as f:
+                    inserted = False
                     for line in lines:
-                        new_content.append(line)
-                        if '#include "log.h"' in line and not found:
-                            new_content.append('\n#define _SILENCE_CXX23_CHRONO_DEPRECATION_WARNING\n')
-                            new_content.append('#include <chrono>\n')
-                            found = True
-                    with open(log_cpp_path, 'w', encoding='utf-8') as f:
-                        f.writelines(new_content)
-            
-# --- Compile ---
-            logger_callback("[BUILD] Configuring CMake...")
-            
-            if platform.system() == "Windows":
-                # Windows specific: Needs C++17 flags and x64 architecture
-                config_cmd = [
-                    "cmake", "-B", "build", 
-                    "-DCMAKE_CXX_STANDARD=17", 
-                    "-DCMAKE_CXX_STANDARD_REQUIRED=ON", 
-                    "-DCMAKE_CXX_FLAGS=\"-std=c++17\"",
-                    "-A", "x64",
-                    "-DLLAMA_NATIVE=OFF"
-                ]
+                        f.write(line)
+                        if '#include "log.h"' in line and not inserted:
+                            f.write('\n#define _SILENCE_CXX23_CHRONO_DEPRECATION_WARNING\n')
+                            f.write('#include <chrono>\n')
+                            inserted = True
             else:
-                # Linux/Mac specific: Simpler configuration
-                # Note: Using -B build automatically creates the folder
-                config_cmd = [
-                    "cmake", "-B", "build", 
-                    "-DLLAMA_NATIVE=OFF"
+                logger_callback("[WARNING] common/log.cpp not found — patch skipped")
+            
+            # ── CMake configure ──────────────────────────────────────────────────────
+            # Platform-specific flags
+            if platform.system() == "Windows":
+                cmake_configure = [
+                    "cmake", "-B", "build",
+                    "-DCMAKE_CXX_STANDARD=17",
+                    "-DCMAKE_CXX_STANDARD_REQUIRED=ON",
+                    '-DCMAKE_CXX_FLAGS="-std=c++17"',
+                    "-A", "x64"   # still needed for VS generator
                 ]
-
-            subprocess.run(config_cmd, check=True)
-
-            logger_callback("[BUILD] Compiling llama-quantize (Release)...")
-            # We use "Release" instead of "Debug" because quantization is math-heavy; 
-            # a Debug build would be 10x slower.
+            else:  # Linux / others
+                cmake_configure = [
+                    "cmake", "-B", "build"
+                ]
+            
+            logger_callback("[BUILD] Running cmake configure...")
+            subprocess.run(cmake_configure, check=True)
+            
+            # ── Build Debug ──────────────────────────────────────────────────────────
             jobs = "10" if platform.system() == "Windows" else str(os.cpu_count() or 4)
-            
-            subprocess.run([
-                "cmake", "--build", "build", 
-                "--config", "Release", 
-                "-j", jobs, 
-                "--target", "llama-quantize"
-            ], check=True)
-            
-            # --- Locate the binary ---
             if platform.system() == "Windows":
-                possible_bins = [
-                    os.path.join("build", "bin", "Release", "llama-quantize.exe"),
-                    os.path.join("build", "Release", "llama-quantize.exe"),
-                    os.path.join("build", "bin", "llama-quantize.exe")
+                build_cmd = [
+                    "cmake", "--build", "build",
+                    "--config", "Debug",
+                    "-j", jobs,
+                    "--target", "llama-quantize"
                 ]
-            else:
-                # Linux paths are simpler (usually build/bin/llama-quantize)
-                possible_bins = [
-                    os.path.join("build", "bin", "llama-quantize"),
-                    os.path.join("build", "llama-quantize")
-                ]
-
-            built_bin = next((b for b in possible_bins if os.path.exists(b)), None)
-
-            # --- Move Files to Script Directory ---
-            if built_bin and os.path.exists(built_bin):
-                # 1. Copy the main executable
-                dest_name = "llama-quantize.exe" if platform.system() == "Windows" else "llama-quantize"
-                final_dest = os.path.join(target_dir, dest_name)
-                if os.path.exists(final_dest): os.remove(final_dest)
-                shutil.copy2(built_bin, final_dest)
-                logger_callback(f"[BUILD] Success! Created {dest_name}")
-
-                # 2. Windows ONLY: Copy required DLLs (ggml.dll, llama.dll)
-                if platform.system() == "Windows":
-                    build_output_dir = os.path.dirname(built_bin)
-                    required_dlls = ["ggml.dll", "llama.dll"]
-                    for dll in required_dlls:
-                        dll_src = os.path.join(build_output_dir, dll)
-                        if os.path.exists(dll_src):
-                            dll_dst = os.path.join(target_dir, dll)
-                            if os.path.exists(dll_dst): os.remove(dll_dst)
-                            shutil.copy2(dll_src, dll_dst)
-                            logger_callback(f"[BUILD] Copied dependency: {dll}")
-                        else:
-                            logger_callback(f"[WARNING] Dependency {dll} not found. Tool might fail to start.")
-
-                messagebox.showinfo("Success", f"Successfully built {dest_name}")
-            else:
-                raise FileNotFoundError("Could not find the compiled binary in the build directory.")
+            else:  # Linux / others
+                build_cmd = [
+                    "cmake", "--build", "build",
+                    "-j", jobs,
+                    "--target", "llama-quantize"
+                ]  # No --config on Linux
             
+            logger_callback("[BUILD] Compiling llama-quantize (Debug)...")
+            subprocess.run(build_cmd, check=True)
+            
+            # ── Locate and copy binary + DLLs ────────────────────────────────────────
+            possible_bin_paths = []
+            if platform.system() == "Windows":
+                possible_bin_paths = [
+                    os.path.join("build", "bin", "Debug", "llama-quantize.exe"),
+                    os.path.join("build", "Debug", "llama-quantize.exe"),
+                ]
+                dll_patterns = ["ggml*.dll", "llama*.dll"]
+            else:
+                possible_bin_paths = [
+                    os.path.join("build", "bin", "llama-quantize"),
+                    os.path.join("build", "llama-quantize"),
+                ]
+                dll_patterns = ["libggml*.so*", "libllama*.so*"]
+            
+            built_binary = None
+            for path in possible_bin_paths:
+                if os.path.exists(path):
+                    built_binary = path
+                    break
+            
+            if built_binary:
+                dest_name = "llama-quantize.exe" if platform.system() == "Windows" else "llama-quantize"
+                dest_path = os.path.join(target_dir, dest_name)
+                shutil.copy2(built_binary, dest_path)
+                logger_callback(f"[BUILD] Copied binary → {dest_path}")
+                
+                # Copy nearby shared libs (platform-specific patterns)
+                bin_dir = os.path.dirname(built_binary)
+                for pattern in dll_patterns:
+                    for lib in glob.glob(os.path.join(bin_dir, pattern)):
+                        shutil.copy2(lib, target_dir)
+                        logger_callback(f"[BUILD] Copied dependency: {os.path.basename(lib)}")
+                
+                messagebox.showinfo("Success", "llama-quantize (Debug) built and copied successfully")
+            else:
+                logger_callback("[ERROR] Could not find built llama-quantize binary in expected locations")
+                messagebox.showerror("Build Failed", "Binary not found after compilation")
+
         except Exception as e:
-            logger_callback(f"[ERROR] Build failed: {e}")
-            messagebox.showerror("Build Error", f"Compilation failed. Ensure VS 2022 C++ tools are installed.\n\nDetails: {e}")
+            logger_callback(f"[ERROR] Build process failed: {e}")
+            messagebox.showerror("Build Error", f"An error occurred during the build:\n{e}")
         finally:
             os.chdir(original_cwd)
-            if os.path.exists(temp_build_dir):
-                try: shutil.rmtree(temp_build_dir)
-                except: pass
 
-# --- IMPORTS ---
-try:
-    import upload_to_hf as uploader
-    UPLOADER_AVAILABLE = True
-except ImportError:
-    uploader = None
-    UPLOADER_AVAILABLE = False
+# --- UPLOADER LOADER ---
+UPLOADER_AVAILABLE = False; uploader = None
+def try_load_uploader():
+    global uploader, UPLOADER_AVAILABLE
+    if os.path.exists("upload_to_hf.py"):
+        try:
+            import upload_to_hf; import importlib; importlib.reload(upload_to_hf)
+            uploader, UPLOADER_AVAILABLE = upload_to_hf, True; return True
+        except: pass
+    return False
+try_load_uploader()
 
 try:
-    import torch
-    from safetensors.torch import save_file, load_file
+    import torch; from safetensors.torch import save_file, load_file
     TORCH_AVAILABLE = True
-except ImportError:
-    TORCH_AVAILABLE = False
+except ImportError: TORCH_AVAILABLE = False
 
-# --- CONFIGURATION GROUPS ---
+# --- CONFIG ---
 QUANT_GROUPS = [
-    ["F16", "BF16"],
-    ["IQ2_XS", "IQ2_S"],
-    ["IQ3_XXS", "IQ3_S", "IQ3_M"],
-    ["IQ4_NL", "IQ4_XS"],
-    ["Q2_K"],
-    ["Q3_K_S", "Q3_K_M", "Q3_K_L"],
-    ["Q4_0", "Q4_K_S", "Q4_K_M"],
-    ["Q5_0", "Q5_K_S", "Q5_K_M"],
-    ["Q6_K", "Q8_0"],
-    ["FP8_E5M2", "FP8_E5M2 (All)"]
+    ["F16", "BF16"], ["IQ2_XS", "IQ2_S"], ["IQ3_XXS", "IQ3_S", "IQ3_M"],
+    ["IQ4_NL", "IQ4_XS"], ["Q2_K"], ["Q3_K_S", "Q3_K_M", "Q3_K_L"],
+    ["Q4_0", "Q4_K_S", "Q4_K_M"], ["Q5_0", "Q5_K_S", "Q5_K_M"],
+    ["Q6_K", "Q8_0"], ["FP8_E5M2", "FP8_E5M2 (All)"]
 ]
-QUANTIZATION_OPTIONS = [item for sublist in QUANT_GROUPS for item in sublist]
 
-# --- FP8 LOGIC ---
 if TORCH_AVAILABLE:
     class FP8Quantizer:
-        def __init__(self, quant_dtype: str = "float8_e5m2"):
-            if not hasattr(torch, quant_dtype): raise ValueError(f"Unsupported: {quant_dtype}")
-            self.quant_dtype = quant_dtype
-
+        def __init__(self, quant_dtype: str = "float8_e5m2"): self.quant_dtype = quant_dtype
         def quantize_weights(self, weight: torch.Tensor) -> torch.Tensor:
             if not weight.is_floating_point(): return weight
-            target_device = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
-            weight_on_target = weight.to(target_device)
-            max_val = torch.max(torch.abs(weight_on_target))
-            if max_val == 0:
-                target_torch_dtype = getattr(torch, self.quant_dtype)
-                return torch.zeros_like(weight_on_target, dtype=target_torch_dtype)
-            scale = max_val / 127.0 
-            scale = torch.max(scale, torch.tensor(1e-12, device=target_device, dtype=weight_on_target.dtype))
-            quantized = torch.round(weight_on_target / scale * 127.0) / 127.0 * scale
-            return quantized.to(dtype=getattr(torch, self.quant_dtype))
-
+            dev = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
+            w = weight.to(dev); mx = torch.max(torch.abs(w))
+            if mx == 0: return torch.zeros_like(w, dtype=getattr(torch, self.quant_dtype))
+            scale = torch.max(mx / 127.0, torch.tensor(1e-12, device=dev, dtype=w.dtype))
+            q = torch.round(w / scale * 127.0) / 127.0 * scale
+            return q.to(dtype=getattr(torch, self.quant_dtype))
         def apply_quantization_to_file(self, src_path, dst_path, unet_only=True, check_stop_func=None):
             if src_path.endswith(".safetensors"): state_dict = load_file(src_path)
             else: state_dict = torch.load(src_path, map_location="cpu")
             
             quantized_dict = {}
             total = len(state_dict)
-            logging.info(f"[FP8] Loaded {total} tensors. Unet Only: {unet_only}")
-
+            
             for i, (name, param) in enumerate(state_dict.items()):
                 if check_stop_func and check_stop_func(): return False
-                if unet_only and "model.diffusion_model" not in name: continue 
-                if i % 100 == 0: logging.info(f"[FP8] Processing {i}/{total}...")
+                
+                # Progress update (Every 5 tensors)
+                if i % 5 == 0 or i == total - 1:
+                    percent = (i + 1) / total * 100
+                    # Use \r to overwrite the line
+                    sys.stdout.write(f"\r[FP8 Progress] {percent:3.1f}% | Tensor {i+1}/{total}")
+                    sys.stdout.flush()
+
+                if unet_only and "model.diffusion_model" not in name:
+                    quantized_dict[name] = param
+                    continue 
                 
                 if isinstance(param, torch.Tensor) and param.is_floating_point():
                     quantized_dict[name] = self.quantize_weights(param)
                 else:
                     quantized_dict[name] = param
             
+            print("") # Move to next line after progress is done
             if not quantized_dict: return False
             save_file(quantized_dict, dst_path)
-            del state_dict; del quantized_dict
-            if torch.cuda.is_available(): torch.cuda.empty_cache()
             return True
 else:
     class FP8Quantizer:
-        def __init__(self, *args, **kwargs): pass
+        pass
 
 # --- GUI UTILS ---
 class DualOutput:
     def __init__(self, original_stream, text_widget):
         self.original_stream = original_stream
         self.text_widget = text_widget
+
     def write(self, message):
+        # 1. Write to terminal/console
         self.original_stream.write(message)
-        if message.strip() and not message.startswith('\r'): 
-            def update():
+        self.original_stream.flush()
+
+        # 2. Update UI
+        if message:
+            def update_ui():
                 try:
                     self.text_widget.configure(state='normal')
+                    # If carriage return is present, overwrite the last line
                     if '\r' in message:
+                        # Split by \r and take the last part
                         parts = message.split('\r')
-                        content = parts[-1]
-                        if content:
-                            self.text_widget.delete("end-1c linestart", "end")
-                            self.text_widget.insert("end", content)
+                        self.text_widget.delete("end-1c linestart", "end")
+                        self.text_widget.insert("end", parts[-1])
                     else:
                         self.text_widget.insert("end", message)
-                    self.text_widget.see("end")
+                    
+                    # Auto-scroll on newlines
+                    if '\n' in message:
+                        self.text_widget.see("end")
                     self.text_widget.configure(state='disabled')
                 except: pass
-            self.text_widget.after(0, update)
-    def flush(self): self.original_stream.flush()
+            self.text_widget.after(0, update_ui)
+
+    def flush(self):
+        self.original_stream.flush()
 
 class ProgressPopup(tk.Toplevel):
     def __init__(self, parent):
@@ -777,6 +790,10 @@ class ConverterApp:
         threading.Thread(target=self.run_main_logic, args=(gen, up_only)).start()
 
     def run_main_logic(self, gen_list, up_list):
+        # Redirect stdout/stderr at the start of the logic thread
+        old_stdout, old_stderr = sys.stdout, sys.stderr
+        sys.stdout = DualOutput(old_stdout, self.log_display)
+        sys.stderr = DualOutput(old_stderr, self.log_display)
         try:
             strategy = self.cleanup_mode.get()
             keep_list = [q for q, v in self.quant_vars_keep.items() if v.get()]
@@ -809,6 +826,21 @@ class ConverterApp:
                     out_dir = os.path.join(base, name) if out_mode == "folder" else base
                 
                 os.makedirs(out_dir, exist_ok=True)
+                
+                # Clean both possible locations where fix files might linger
+                locations_to_clean = [
+                    os.path.dirname(os.path.abspath(__file__)),  # GUI script folder
+                    out_dir                                     # current model's output folder
+                ]
+                
+                for loc in locations_to_clean:
+                    for stale in glob.glob(os.path.join(loc, "fix_5d_tensors_*.safetensors")):
+                        try:
+                            os.remove(stale)
+                            logging.info(f"Cleaned stale fix file from {loc}: {stale}")
+                        except Exception as e:
+                            logging.debug(f"Could not remove {stale}: {e}")
+                
                 generated_files = []
 
                 # --- FP8 Logic ---
@@ -880,7 +912,7 @@ class ConverterApp:
                             unfixed = os.path.join(out_dir, f"{name}-{q}-UnFixed.gguf")
                             if self.run_cmd([self.quant_cmd, gguf_src, unfixed, q]):
                                 final = unfixed
-                                fixes = glob.glob("fix_5d_tensors_*.safetensors")
+                                fixes = glob.glob(os.path.join(out_dir, "fix_5d_tensors_*.safetensors"))
                                 if fixes:
                                     fixed = os.path.join(out_dir, f"{name}-{q}-FIXED.gguf")
                                     self.run_cmd([sys.executable, "-u", "fix_5d_tensors.py", "--src", unfixed, "--dst", fixed, "--fix", fixes[0], "--overwrite"])
@@ -917,6 +949,10 @@ class ConverterApp:
             logging.exception("Error")
             messagebox.showerror("Error", str(e))
         finally:
+            # Restore streams when thread finishes
+            sys.stdout, sys.stderr = old_stdout, old_stderr
+            self.is_running = False
+            self.btn_run.config(state="normal")
             self.is_running = False
             self.btn_run.config(state="normal")
 
@@ -931,8 +967,14 @@ class ConverterApp:
 
     def handle_upload_cleanup(self, item, keep_list, up_list, up_mode, out_mode, keep_dequant, keep_convert):
         if self.stop_requested: return
+        
+        # --- LATE LOAD CHECK ---
+        if not UPLOADER_AVAILABLE:
+            try_load_uploader()
+
         name, files, disp, src = item['name'], item['files'], item['model_display'], item['src_path']
         r_gguf, d_gguf, r_fp8, d_fp8 = self.hf_repo_gguf.get(), self.hf_dest_gguf.get(), self.hf_repo_fp8.get(), self.hf_dest_fp8.get()
+        
         if up_mode == "custom":
             dat = self.custom_file_data.get(src, {})
             if "gguf_r" in dat and dat["gguf_r"].get(): r_gguf = dat["gguf_r"].get()
@@ -944,32 +986,41 @@ class ConverterApp:
             d_gguf = f"{d_gguf}/{name}" if d_gguf else name
             d_fp8 = f"{d_fp8}/{name}" if d_fp8 else name
 
-        if self.do_upload.get() and UPLOADER_AVAILABLE:
-            self.msg_queue.put(("UPDATE_GRID", disp, "Upload", "RUNNING"))
-            files_to_upload = []
-            for f in files:
-                if f.endswith("-CONVERT.gguf") or f.endswith("-UnFixed.gguf") or f.endswith("-dequant.safetensors"): continue
-                fname = os.path.basename(f)
-                should_upload = False
-                for q in up_list:
-                    if self._check_file_match_quant(fname, q):
-                        should_upload = True; break
-                if should_upload: files_to_upload.append(f)
-            files_to_upload = list(set(files_to_upload))
-            fp8s = [f for f in files_to_upload if "FP8" in f]
-            ggufs = [f for f in files_to_upload if "FP8" not in f]
-            old_stdout, old_stderr = sys.stdout, sys.stderr
-            sys.stdout = DualOutput(old_stdout, self.log_display)
-            sys.stderr = DualOutput(old_stderr, self.log_display)
-            try:
-                if fp8s and r_fp8: uploader.main(token=self.hf_token.get(), repo_id=r_fp8, local_paths_args=fp8s, dest_folder=d_fp8, non_interactive=True)
-                if ggufs and r_gguf: uploader.main(token=self.hf_token.get(), repo_id=r_gguf, local_paths_args=ggufs, dest_folder=d_gguf, non_interactive=True)
-                self.msg_queue.put(("UPDATE_GRID", disp, "Upload", "DONE"))
-            except Exception as e:
+        if self.do_upload.get():
+            if not UPLOADER_AVAILABLE:
+                logging.error("Upload requested but upload_to_hf.py is missing or could not be loaded.")
                 self.msg_queue.put(("UPDATE_GRID", disp, "Upload", "ERROR"))
-            finally: 
-                sys.stdout, sys.stderr = old_stdout, old_stderr
-        else: self.msg_queue.put(("UPDATE_GRID", disp, "Upload", "SKIP"))
+            else:
+                self.msg_queue.put(("UPDATE_GRID", disp, "Upload", "RUNNING"))
+                files_to_upload = []
+                for f in files:
+                    if f.endswith("-CONVERT.gguf") or f.endswith("-UnFixed.gguf") or f.endswith("-dequant.safetensors"): continue
+                    fname = os.path.basename(f)
+                    should_upload = False
+                    for q in up_list:
+                        if self._check_file_match_quant(fname, q):
+                            should_upload = True; break
+                    if should_upload: files_to_upload.append(f)
+                
+                files_to_upload = list(set(files_to_upload))
+                fp8s = [f for f in files_to_upload if "FP8" in f]
+                ggufs = [f for f in files_to_upload if "FP8" not in f]
+                
+                old_stdout, old_stderr = sys.stdout, sys.stderr
+                sys.stdout = DualOutput(old_stdout, self.log_display)
+                sys.stderr = DualOutput(old_stderr, self.log_display)
+                
+                try:
+                    if fp8s and r_fp8: uploader.main(token=self.hf_token.get(), repo_id=r_fp8, local_paths_args=fp8s, dest_folder=d_fp8, non_interactive=True)
+                    if ggufs and r_gguf: uploader.main(token=self.hf_token.get(), repo_id=r_gguf, local_paths_args=ggufs, dest_folder=d_gguf, non_interactive=True)
+                    self.msg_queue.put(("UPDATE_GRID", disp, "Upload", "DONE"))
+                except Exception as e:
+                    logging.error(f"Upload Error: {e}")
+                    self.msg_queue.put(("UPDATE_GRID", disp, "Upload", "ERROR"))
+                finally: 
+                    sys.stdout, sys.stderr = old_stdout, old_stderr
+        else:
+            self.msg_queue.put(("UPDATE_GRID", disp, "Upload", "SKIP"))
 
         self.msg_queue.put(("UPDATE_GRID", disp, "Cleanup", "RUNNING"))
         for p in files:
@@ -988,14 +1039,42 @@ class ConverterApp:
 
     def run_cmd(self, cmd):
         logging.info(f"CMD: {' '.join(cmd)}")
+        
+        env = os.environ.copy()
+        env["PYTHONUNBUFFERED"] = "1"
+        env["TERM"] = "xterm" # Helps some tools decide to show progress bars
+
         try:
-            self.current_process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
-            for l in iter(self.current_process.stdout.readline, ''):
-                logging.info(l.strip())
-                if self.stop_requested: self.current_process.kill(); return False
-            self.current_process.stdout.close()
+            self.current_process = subprocess.Popen(
+                cmd, 
+                stdout=subprocess.PIPE, 
+                stderr=subprocess.STDOUT, 
+                text=True,
+                bufsize=0, # No buffering
+                encoding='utf-8',
+                errors='replace',
+                env=env
+            )
+
+            # Read character by character to catch \r
+            while True:
+                char = self.current_process.stdout.read(1)
+                if not char and self.current_process.poll() is not None:
+                    break
+                
+                if char:
+                    # Write to sys.stdout (which is handled by DualOutput)
+                    sys.stdout.write(char)
+                    sys.stdout.flush()
+
+                if self.stop_requested:
+                    self.current_process.kill()
+                    return False
+            
             return (self.current_process.wait() == 0)
-        except: return False
+        except Exception as e:
+            logging.error(f"Execution error: {e}")
+            return False
 
     def save_settings(self, f):
         d = {

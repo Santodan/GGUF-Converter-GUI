@@ -1,8 +1,6 @@
 # GGUF-Converter-GUI
 
-This is my attempt of making the convertion of GGUFs easier.
-
-I wen ahead and created this user-friendly graphical interface designed to simplify the process of converting and quantizing AI models into the GGUF format.
+I went ahead and created this user-friendly graphical interface designed to simplify the process of converting and quantizing AI models into the GGUF format.
 
 This tool eliminates the need for manual command-line execution, providing a visual way to handle model paths, output settings, quantization levels and direct upload to hugginface.
 
@@ -33,21 +31,25 @@ All the scripts were based, or are coming from, https://github.com/city96/ComfyU
   - requests
  
 ## 📦 Installation
-1. Clone this repository:
-   ```
-   git clone https://github.com/Santodan/GGUF-Converter-GUI.git
-   cd GGUF-Converter-GUI
-   ```
-2. Install all the requirements
-   ```
-   pip install -r requirements.txt
-   ```
-3. Run the `gui_run_conversion.py`
+There are two ways of installing this GUI:
+For Windows
+  1. Download `start_gui.bat` from the main folder and change for the `venv` that you want to use
+  2. Download `gui_run_conversion.py` from the main folder
+  3. Run `start_gui.bat`
+
+For Linux
+  1. Download `gui_run_conversion.py` from the main folder
+  2. Run `gui_run_conversion.py`
+
+In both OS, the script should download all the dependencies
    
 Optional
 - **Hugginface Token**
   In case you want to autmatically gather the Hugginface token from the OS, you can set the variable `HUGGING_FACE_HUB_TOKEN` that the code will automatically gather it
 - If you want to use an existing python environmnet, you will need to activate that environmnet before running the `gui_run_conversion.py`
+
+# Utils
+In the `Utils` folder there are some scripts that I used to help me in my curse to this point, they aren't needed, but they are there in case it is useful.
 
 ## 🤝 Contributing
 
