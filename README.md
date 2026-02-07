@@ -17,7 +17,7 @@ All the scripts were based, or are coming from, https://github.com/city96/ComfyU
 - **Output Management**: Custom output naming and directory selection.
 - **Progress Tracking**: Real-time console/status output within the GUI to monitor the conversion process.[1]
 
-<img width="1920" height="1080" alt="c86e9333-d276-4214-9dc9-d24f849d3d1c" src="https://github.com/user-attachments/assets/177c35c6-737d-47be-9bca-dba32eada1e9" />
+<img width="1602" height="982" alt="image" src="https://github.com/user-attachments/assets/cd85d97d-f2f8-462f-8d31-f40ff2bdeb59" />
 
 
 ## 🛠️ Prerequisites
