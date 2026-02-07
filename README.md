@@ -36,9 +36,9 @@ All the scripts were based, or are coming from, https://github.com/city96/ComfyU
   1. Download `gui_run_conversion.py` from the main folder
   2. Run `gui_run_conversion.py`
 
-In both OS, the script should download all the dependencies
+The script should download all the dependencies and compile `llama-quantize` in both Windows and Linux
    
-Optional
+### Optional
 - **Hugginface Token**
   In case you want to autmatically gather the Hugginface token from the OS, you can set the variable `HUGGING_FACE_HUB_TOKEN` that the code will automatically gather it
 - If you want to use an existing python environmnet, you will need to activate that environmnet before running the `gui_run_conversion.py`
