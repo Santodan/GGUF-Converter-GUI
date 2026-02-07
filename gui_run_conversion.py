@@ -83,11 +83,11 @@ ensure_dependencies()
 class DependencyManager:
     """Checks for, downloads, and compiles required tools."""
     SOURCES = {
-        "dequantize_fp8v2.py": "https://raw.githubusercontent.com/Santodan/GGUF-Converter-GUI/refs/heads/main/PyTorch/dequantize_fp8v2.py",
+        "dequantize_fp8v2.py": "https://raw.githubusercontent.com/Santodan/GGUF-Converter-GUI/refs/heads/main/dequantize_fp8v2.py",
         "convert.py": "https://raw.githubusercontent.com/city96/ComfyUI-GGUF/refs/heads/auto_convert/tools/convert.py",
         "lcpp.patch": "https://raw.githubusercontent.com/city96/ComfyUI-GGUF/refs/heads/auto_convert/tools/lcpp.patch",
         "fix_5d_tensors.py": "https://raw.githubusercontent.com/city96/ComfyUI-GGUF/refs/heads/auto_convert/tools/fix_5d_tensors.py",
-        "upload_to_hf.py": "https://raw.githubusercontent.com/Santodan/GGUF-Converter-GUI/refs/heads/main/PyTorch/upload_to_hf.py"
+        "upload_to_hf.py": "https://raw.githubusercontent.com/Santodan/GGUF-Converter-GUI/refs/heads/main/upload_to_hf.py"
     }
 
     @staticmethod
