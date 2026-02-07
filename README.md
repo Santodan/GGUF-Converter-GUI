@@ -34,6 +34,12 @@ All the scripts were based, or are coming from, https://github.com/city96/ComfyU
  
 ## 📦 Installation
   1. Download `gui_run_conversion.py` from the main folder
+  3. Open a command line console
+      - For Windows, you will need to run the following commands first:
+      ```
+      set PYTHONUTF8=1
+      chcp 65001
+      ```
   2. Run `gui_run_conversion.py`
 
 The script should download all the dependencies and compile `llama-quantize` in both Windows and Linux
