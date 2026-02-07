@@ -303,32 +303,49 @@ class DualOutput:
     def __init__(self, original_stream, text_widget):
         self.original_stream = original_stream
         self.text_widget = text_widget
+        self.log_buffer = "" # To store partial lines for the file
 
     def write(self, message):
-        # 1. Write to terminal/console
+        # 1. Write to terminal/console (CMD)
         self.original_stream.write(message)
         self.original_stream.flush()
 
-        # 2. Update UI
+        # 2. Write to the Log File
+        self.write_to_file(message)
+
+        # 3. Update UI
         if message:
             def update_ui():
                 try:
                     self.text_widget.configure(state='normal')
-                    # If carriage return is present, overwrite the last line
                     if '\r' in message:
-                        # Split by \r and take the last part
                         parts = message.split('\r')
                         self.text_widget.delete("end-1c linestart", "end")
                         self.text_widget.insert("end", parts[-1])
                     else:
                         self.text_widget.insert("end", message)
                     
-                    # Auto-scroll on newlines
                     if '\n' in message:
                         self.text_widget.see("end")
                     self.text_widget.configure(state='disabled')
                 except: pass
             self.text_widget.after(0, update_ui)
+
+    def write_to_file(self, message):
+        """Manually sends stdout/stderr data to the logging FileHandlers."""
+        # We process the message to handle \r so the log file is readable
+        for char in message:
+            if char == '\n':
+                # When a line is complete, log it to the file
+                if self.log_buffer.strip():
+                    logging.getLogger().info(self.log_buffer.strip())
+                self.log_buffer = ""
+            elif char == '\r':
+                # On carriage return, we just clear the buffer 
+                # (The log file only keeps the 'final' state of a progress bar)
+                self.log_buffer = ""
+            else:
+                self.log_buffer += char
 
     def flush(self):
         self.original_stream.flush()
@@ -951,8 +968,6 @@ class ConverterApp:
         finally:
             # Restore streams when thread finishes
             sys.stdout, sys.stderr = old_stdout, old_stderr
-            self.is_running = False
-            self.btn_run.config(state="normal")
             self.is_running = False
             self.btn_run.config(state="normal")
 
