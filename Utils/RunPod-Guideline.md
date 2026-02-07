@@ -57,7 +57,7 @@ NGROK_URL=$(curl -s http://localhost:4040/api/tunnels | grep -o "tcp://[^\"']*")
 $NGROK_URL
 ```
 ## 10. CONNECT TO THE VNC SERVER
-Create a new VNC server, in your selected client, where the `hostname` and the `port` are the output of `$NGROK_URL`
+Create a new VNC server, in your selected client, where the `hostname` and the `port` are the output of `$NGROK_URL`<br>
 Example of an output of the command: `htto://4.tcp.ngrok.io:18462`, which means that the `hostname`is `4.tcp.ngrok.io` and the `port` is `18462`
 
 ## 11. RUN PYTHON APP
