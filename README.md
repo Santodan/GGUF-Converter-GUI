@@ -45,7 +45,7 @@ The script should download all the dependencies and compile `llama-quantize` in 
 
 # Utils
 In the `Utils` folder there are some scripts that I used to help me in my curse to this point, they aren't needed, but they are there in case it is useful.
-If you want to run the tool in RunPod, you can follow the steps in the [RunPod-Guideline](Utils\RunPod-Guideline.md)
+If you want to run the tool in RunPod, you can follow the steps in the [RunPod-Guideline](Utils/RunPod-Guideline.md)
 
 ## 🤝 Contributing
 
