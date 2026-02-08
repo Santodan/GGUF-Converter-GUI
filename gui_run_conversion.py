@@ -83,11 +83,11 @@ ensure_dependencies()
 class DependencyManager:
     """Checks for, downloads, and compiles required tools."""
     SOURCES = {
-        "dequantize_fp8v2.py": "https://raw.githubusercontent.com/Santodan/GGUF-Converter-GUI/refs/heads/main/dequantize_fp8v2.py",
+        "dequantize_fp8v2.py": "https://raw.githubusercontent.com/Santodan/GGUF-Converter-GUI/refs/heads/main/PyTorch/dequantize_fp8v2.py",
         "convert.py": "https://raw.githubusercontent.com/city96/ComfyUI-GGUF/refs/heads/auto_convert/tools/convert.py",
         "lcpp.patch": "https://raw.githubusercontent.com/city96/ComfyUI-GGUF/refs/heads/auto_convert/tools/lcpp.patch",
         "fix_5d_tensors.py": "https://raw.githubusercontent.com/city96/ComfyUI-GGUF/refs/heads/auto_convert/tools/fix_5d_tensors.py",
-        "upload_to_hf.py": "https://raw.githubusercontent.com/Santodan/GGUF-Converter-GUI/refs/heads/main/upload_to_hf.py"
+        "upload_to_hf.py": "https://raw.githubusercontent.com/Santodan/GGUF-Converter-GUI/refs/heads/main/PyTorch/upload_to_hf.py"
     }
 
     @staticmethod
@@ -247,8 +247,7 @@ except ImportError: TORCH_AVAILABLE = False
 
 # --- CONFIG ---
 QUANT_GROUPS = [
-    ["F16", "BF16"], ["IQ2_XS", "IQ2_S"], ["IQ3_XXS", "IQ3_S", "IQ3_M"],
-    ["IQ4_NL", "IQ4_XS"], ["Q2_K"], ["Q3_K_S", "Q3_K_M", "Q3_K_L"],
+    ["F16", "BF16"], ["Q2_K"], ["Q3_K_S", "Q3_K_M", "Q3_K_L"],
     ["Q4_0", "Q4_K_S", "Q4_K_M"], ["Q5_0", "Q5_K_S", "Q5_K_M"],
     ["Q6_K", "Q8_0"], ["FP8_E5M2", "FP8_E5M2 (All)"]
 ]
@@ -404,7 +403,7 @@ class ConverterApp:
     def __init__(self, root):
         self.root = root
         self.root.title("GGUF & FP8 Manager")
-        self.root.geometry("1600x950")
+        self.root.geometry("1300x850")
         
         script_dir = os.path.dirname(os.path.abspath(__file__))
         self.settings_file = os.path.join(script_dir, "last_run_settings.json")
@@ -783,8 +782,8 @@ class ConverterApp:
         
         self.stop_requested = False
         steps = []
-        SORT_ORDER = ["IQ2_XS", "IQ2_S", "Q2_K", "IQ3_XXS", "IQ3_S", "IQ3_M", "Q3_K_S", "Q3_K_M", "Q3_K_L",
-                      "IQ4_NL", "IQ4_XS", "Q4_0", "Q4_K_S", "Q4_K_M", "Q5_0", "Q5_K_S", "Q5_K_M", "Q6_K", "Q8_0",
+        SORT_ORDER = ["Q2_K", "Q3_K_S", "Q3_K_M", "Q3_K_L",
+                      "Q4_0", "Q4_K_S", "Q4_K_M", "Q5_0", "Q5_K_S", "Q5_K_M", "Q6_K", "Q8_0",
                       "BF16", "F16", "FP8_E4M3FN", "FP8_E4M3FN (All)", "FP8_E5M2", "FP8_E5M2 (All)"]
         
         active_quants = list(set(gen + up_only))
