@@ -299,52 +299,24 @@ else:
 
 # --- GUI UTILS ---
 class DualOutput:
-    def __init__(self, original_stream, text_widget):
+    def __init__(self, original_stream, msg_queue, log_file_handle):
         self.original_stream = original_stream
-        self.text_widget = text_widget
-        self.log_buffer = "" # To store partial lines for the file
+        self.msg_queue = msg_queue
+        self.log_file_handle = log_file_handle
 
     def write(self, message):
-        # 1. Write to terminal/console (CMD)
+        if not message: return
+        # 1. Write to the hidden black console (Standard behavior)
         self.original_stream.write(message)
         self.original_stream.flush()
 
-        # 2. Write to the Log File
-        self.write_to_file(message)
+        # 2. Write RAW to the Log File (keeps the disk log clean)
+        if self.log_file_handle:
+            self.log_file_handle.write(message)
+            self.log_file_handle.flush()
 
-        # 3. Update UI
-        if message:
-            def update_ui():
-                try:
-                    self.text_widget.configure(state='normal')
-                    if '\r' in message:
-                        parts = message.split('\r')
-                        self.text_widget.delete("end-1c linestart", "end")
-                        self.text_widget.insert("end", parts[-1])
-                    else:
-                        self.text_widget.insert("end", message)
-                    
-                    if '\n' in message:
-                        self.text_widget.see("end")
-                    self.text_widget.configure(state='disabled')
-                except: pass
-            self.text_widget.after(0, update_ui)
-
-    def write_to_file(self, message):
-        """Manually sends stdout/stderr data to the logging FileHandlers."""
-        # We process the message to handle \r so the log file is readable
-        for char in message:
-            if char == '\n':
-                # When a line is complete, log it to the file
-                if self.log_buffer.strip():
-                    logging.getLogger().info(self.log_buffer.strip())
-                self.log_buffer = ""
-            elif char == '\r':
-                # On carriage return, we just clear the buffer 
-                # (The log file only keeps the 'final' state of a progress bar)
-                self.log_buffer = ""
-            else:
-                self.log_buffer += char
+        # 3. Send to the GUI Queue
+        self.msg_queue.put(("RAW", message))
 
     def flush(self):
         self.original_stream.flush()
@@ -442,28 +414,23 @@ class ConverterApp:
         self.logger = logging.getLogger()
         self.logger.setLevel(logging.INFO)
         if self.logger.hasHandlers(): self.logger.handlers.clear()
+        
         formatter = logging.Formatter('%(asctime)s - %(message)s', datefmt='%H:%M:%S')
+        
+        # Console Handler
         ch = logging.StreamHandler(sys.stdout)
         ch.setFormatter(formatter)
         self.logger.addHandler(ch)
+        
+        # File Handler
         os.makedirs("logs", exist_ok=True)
         ts = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-        fh = logging.FileHandler(f"logs/log_{ts}.log", encoding='utf-8')
+        self.current_log_path = f"logs/log_{ts}.log"
+        fh = logging.FileHandler(self.current_log_path, encoding='utf-8')
         fh.setFormatter(formatter)
         self.logger.addHandler(fh)
-        class TextHandler(logging.Handler):
-            def __init__(self, widget):
-                super().__init__()
-                self.widget = widget
-            def emit(self, record):
-                msg = self.format(record)
-                def app():
-                    self.widget.configure(state='normal')
-                    self.widget.insert(tk.END, msg + '\n')
-                    self.widget.see(tk.END)
-                    self.widget.configure(state='disabled')
-                self.widget.after(0, app)
-        self.logger.addHandler(TextHandler(self.log_display))
+        
+        # REMOVED TextHandler here because DualOutput now handles the UI directly.
 
     def _setup_ui(self):
         main_pane = tk.PanedWindow(self.root, orient=tk.VERTICAL, sashwidth=5)
@@ -763,14 +730,58 @@ class ConverterApp:
 
     def process_queue(self):
         try:
+            # Process all pending messages in one go to keep UI real-time
+            self.log_display.configure(state='normal')
+            updates_made = False
+            
             while True:
-                msg = self.msg_queue.get_nowait()
+                try:
+                    msg = self.msg_queue.get_nowait()
+                except queue.Empty:
+                    break
+                
                 if msg[0] == "UPDATE_GRID":
-                    if self.progress_window is None or not self.progress_window.winfo_exists():
-                        self.show_progress_popup()
-                    self.progress_window.update_status(msg[1], msg[2], msg[3])
-        except queue.Empty: pass
-        self.root.after(100, self.process_queue)
+                    if self.progress_window and self.progress_window.winfo_exists():
+                        self.progress_window.update_status(msg[1], msg[2], msg[3])
+                
+                elif msg[0] == "RAW":
+                    updates_made = True
+                    text = msg[1]
+                    
+                    # 1. Handle ANSI "Cursor Up" (Hugging Face multi-bar)
+                    if "\x1b[A" in text:
+                        count = text.count("\x1b[A")
+                        insert_pos = self.log_display.index("insert")
+                        line = int(insert_pos.split('.')[0])
+                        new_line = max(1, line - count)
+                        self.log_display.mark_set("insert", f"{new_line}.0")
+                        text = text.replace("\x1b[A", "")
+
+                    # 2. Handle Progress Bar Overwrite (\r)
+                    if '\r' in text:
+                        # Only take the text after the last \r in this chunk
+                        parts = text.split('\r')
+                        self.log_display.delete("insert linestart", "insert lineend")
+                        self.log_display.insert("insert", parts[-1])
+                    else:
+                        # 3. Regular text
+                        self.log_display.insert("insert", text)
+                    
+                    # 4. Auto-scroll logic: only if we are at the end
+                    if "\n" in text:
+                        self.log_display.mark_set("insert", "end")
+                        self.log_display.see("end")
+
+            if updates_made:
+                # Force Tkinter to redraw immediately to prevent "frozen" look
+                self.root.update_idletasks()
+                
+            self.log_display.configure(state='disabled')
+            
+        except Exception as e:
+            pass
+            
+        self.root.after(10, self.process_queue)
 
     def start_thread(self):
         if self.is_running: return
@@ -806,11 +817,19 @@ class ConverterApp:
         threading.Thread(target=self.run_main_logic, args=(gen, up_only)).start()
 
     def run_main_logic(self, gen_list, up_list):
-        # Redirect stdout/stderr at the start of the logic thread
+        # Identify the current log file from the logger
+        log_file_handle = None
+        for handler in logging.getLogger().handlers:
+            if isinstance(handler, logging.FileHandler):
+                log_file_handle = handler.stream
+
+        # Redirect stdout/stderr using the new DualOutput logic
         old_stdout, old_stderr = sys.stdout, sys.stderr
-        sys.stdout = DualOutput(old_stdout, self.log_display)
-        sys.stderr = DualOutput(old_stderr, self.log_display)
+        sys.stdout = DualOutput(old_stdout, self.msg_queue, log_file_handle)
+        sys.stderr = DualOutput(old_stderr, self.msg_queue, log_file_handle)
+        
         try:
+            # ... existing code (strategy, keep_list, etc.) ...
             strategy = self.cleanup_mode.get()
             keep_list = [q for q, v in self.quant_vars_keep.items() if v.get()]
             keep_dequant = self.keep_dequant_var.get()
@@ -982,7 +1001,12 @@ class ConverterApp:
     def handle_upload_cleanup(self, item, keep_list, up_list, up_mode, out_mode, keep_dequant, keep_convert):
         if self.stop_requested: return
         
-        # --- LATE LOAD CHECK ---
+        # Identify the current log file handle
+        log_file_handle = None
+        for handler in logging.getLogger().handlers:
+            if isinstance(handler, logging.FileHandler):
+                log_file_handle = handler.stream
+
         if not UPLOADER_AVAILABLE:
             try_load_uploader()
 
@@ -1002,7 +1026,7 @@ class ConverterApp:
 
         if self.do_upload.get():
             if not UPLOADER_AVAILABLE:
-                logging.error("Upload requested but upload_to_hf.py is missing or could not be loaded.")
+                logging.error("Upload requested but upload_to_hf.py is missing.")
                 self.msg_queue.put(("UPDATE_GRID", disp, "Upload", "ERROR"))
             else:
                 self.msg_queue.put(("UPDATE_GRID", disp, "Upload", "RUNNING"))
@@ -1020,19 +1044,17 @@ class ConverterApp:
                 fp8s = [f for f in files_to_upload if "FP8" in f]
                 ggufs = [f for f in files_to_upload if "FP8" not in f]
                 
-                old_stdout, old_stderr = sys.stdout, sys.stderr
-                sys.stdout = DualOutput(old_stdout, self.log_display)
-                sys.stderr = DualOutput(old_stderr, self.log_display)
-                
+                # NOTE: Redirection is NOT needed here because run_main_logic 
+                # already redirected sys.stdout for the entire thread.
                 try:
-                    if fp8s and r_fp8: uploader.main(token=self.hf_token.get(), repo_id=r_fp8, local_paths_args=fp8s, dest_folder=d_fp8, non_interactive=True)
-                    if ggufs and r_gguf: uploader.main(token=self.hf_token.get(), repo_id=r_gguf, local_paths_args=ggufs, dest_folder=d_gguf, non_interactive=True)
+                    if fp8s and r_fp8: 
+                        uploader.main(token=self.hf_token.get(), repo_id=r_fp8, local_paths_args=fp8s, dest_folder=d_fp8, non_interactive=True)
+                    if ggufs and r_gguf: 
+                        uploader.main(token=self.hf_token.get(), repo_id=r_gguf, local_paths_args=ggufs, dest_folder=d_gguf, non_interactive=True)
                     self.msg_queue.put(("UPDATE_GRID", disp, "Upload", "DONE"))
                 except Exception as e:
                     logging.error(f"Upload Error: {e}")
                     self.msg_queue.put(("UPDATE_GRID", disp, "Upload", "ERROR"))
-                finally: 
-                    sys.stdout, sys.stderr = old_stdout, old_stderr
         else:
             self.msg_queue.put(("UPDATE_GRID", disp, "Upload", "SKIP"))
 
@@ -1053,33 +1075,25 @@ class ConverterApp:
 
     def run_cmd(self, cmd):
         logging.info(f"CMD: {' '.join(cmd)}")
-        
         env = os.environ.copy()
         env["PYTHONUNBUFFERED"] = "1"
-        env["TERM"] = "xterm" # Helps some tools decide to show progress bars
+        env["COLUMNS"] = "100"  # Ensures progress bars don't wrap and break logic
+        env["TERM"] = "xterm"   # Forces standard terminal control codes
 
         try:
             self.current_process = subprocess.Popen(
-                cmd, 
-                stdout=subprocess.PIPE, 
-                stderr=subprocess.STDOUT, 
-                text=True,
-                bufsize=0, # No buffering
-                encoding='utf-8',
-                errors='replace',
-                env=env
+                cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, 
+                text=True, bufsize=1, encoding='utf-8', errors='replace', env=env
             )
 
-            # Read character by character to catch \r
+            # Read in larger chunks for speed (prevents GUI lag)
             while True:
-                char = self.current_process.stdout.read(1)
-                if not char and self.current_process.poll() is not None:
+                chunk = self.current_process.stdout.read(256)
+                if not chunk and self.current_process.poll() is not None:
                     break
-                
-                if char:
-                    # Write to sys.stdout (which is handled by DualOutput)
-                    sys.stdout.write(char)
-                    sys.stdout.flush()
+                if chunk:
+                    sys.stdout.write(chunk)
+                    # No need to flush manually, DualOutput handles it
 
                 if self.stop_requested:
                     self.current_process.kill()
