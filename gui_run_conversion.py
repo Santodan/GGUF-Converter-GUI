@@ -1113,7 +1113,8 @@ class ConverterApp:
             "shut": self.shutdown_var.get(), "q_gen": [k for k,v in self.quant_vars_gen.items() if v.get()],
             "q_up": [k for k,v in self.quant_vars_up.items() if v.get()],
             "q_keep": [k for k,v in self.quant_vars_keep.items() if v.get()],
-            "k_dequant": self.keep_dequant_var.get(), "k_convert": self.keep_convert_var.get()
+            "k_dequant": self.keep_dequant_var.get(), "k_convert": self.keep_convert_var.get(),
+            "geometry": self.root.geometry()
         }
         try: json.dump(d, open(f, 'w'), indent=4)
         except: pass
@@ -1135,6 +1136,7 @@ class ConverterApp:
             if "shut" in d: self.shutdown_var.set(d["shut"])
             if "k_dequant" in d: self.keep_dequant_var.set(d["k_dequant"])
             if "k_convert" in d: self.keep_convert_var.set(d["k_convert"])
+            if "geometry" in d: self.root.geometry(d["geometry"])
             for v in self.quant_vars_gen.values(): v.set(False)
             for v in self.quant_vars_up.values(): v.set(False)
             for v in self.quant_vars_keep.values(): v.set(False)
