@@ -17,6 +17,12 @@ from datetime import datetime
 import math
 import importlib.util
 
+if platform.system() == "Windows":
+    import ctypes
+    kernel32 = ctypes.windll.kernel32
+    # Disable QuickEdit Mode (prevents console clicking from freezing the app)
+    kernel32.SetConsoleMode(kernel32.GetStdHandle(-10), 128)
+
 # --- 0. AUTO-RESTART IN VENV ---
 def check_and_restart_in_venv():
     possible_venvs = ["venv", ".venv", "env"]
@@ -1033,30 +1039,46 @@ class ConverterApp:
                 self.msg_queue.put(("UPDATE_GRID", disp, "Upload", "ERROR"))
             else:
                 self.msg_queue.put(("UPDATE_GRID", disp, "Upload", "RUNNING"))
+                
+                # 1. Identify which files belong to which repo
                 files_to_upload = []
                 for f in files:
-                    if f.endswith("-CONVERT.gguf") or f.endswith("-UnFixed.gguf") or f.endswith("-dequant.safetensors"): continue
                     fname = os.path.basename(f)
-                    should_upload = False
+                    # Skip temporary/utility files
+                    if any(x in fname for x in ["-CONVERT", "-UnFixed", "-dequant"]): continue
+                    
+                    # Check if this file's quantization was selected for upload
                     for q in up_list:
                         if self._check_file_match_quant(fname, q):
-                            should_upload = True; break
-                    if should_upload: files_to_upload.append(f)
+                            files_to_upload.append(f)
+                            break
                 
                 files_to_upload = list(set(files_to_upload))
-                fp8s = [f for f in files_to_upload if "FP8" in f]
-                ggufs = [f for f in files_to_upload if "FP8" not in f]
-                
-                # NOTE: Redirection is NOT needed here because run_main_logic 
-                # already redirected sys.stdout for the entire thread.
+                fp8s = [f for f in files_to_upload if "FP8" in os.path.basename(f)]
+                ggufs = [f for f in files_to_upload if "FP8" not in os.path.basename(f)]
+
                 try:
-                    if fp8s and r_fp8: 
-                        uploader.main(token=self.hf_token.get(), repo_id=r_fp8, local_paths_args=fp8s, dest_folder=d_fp8, non_interactive=True)
-                    if ggufs and r_gguf: 
-                        uploader.main(token=self.hf_token.get(), repo_id=r_gguf, local_paths_args=ggufs, dest_folder=d_gguf, non_interactive=True)
-                    self.msg_queue.put(("UPDATE_GRID", disp, "Upload", "DONE"))
+                    success = True
+                    python_exe = self.python_path_var.get()
+                    token = self.hf_token.get()
+
+                    # 2. Launch Uploader as a SEPARATE PROCESS (Fixes the hanging)
+                    if fp8s and r_fp8:
+                        logging.info(f"Launching FP8 Upload for {len(fp8s)} files...")
+                        cmd = [python_exe, "upload_to_hf.py", "--token", token, "--repo", r_fp8, "--dest", d_fp8, "--yes", "--path"] + fp8s
+                        if not self.run_cmd(cmd): success = False
+                    
+                    if ggufs and r_gguf:
+                        logging.info(f"Launching GGUF Upload for {len(ggufs)} files...")
+                        cmd = [python_exe, "upload_to_hf.py", "--token", token, "--repo", r_gguf, "--dest", d_gguf, "--yes", "--path"] + ggufs
+                        if not self.run_cmd(cmd): success = False
+
+                    if success:
+                        self.msg_queue.put(("UPDATE_GRID", disp, "Upload", "DONE"))
+                    else:
+                        self.msg_queue.put(("UPDATE_GRID", disp, "Upload", "ERROR"))
                 except Exception as e:
-                    logging.error(f"Upload Error: {e}")
+                    logging.error(f"Upload Process Error: {e}")
                     self.msg_queue.put(("UPDATE_GRID", disp, "Upload", "ERROR"))
         else:
             self.msg_queue.put(("UPDATE_GRID", disp, "Upload", "SKIP"))
@@ -1082,25 +1104,21 @@ class ConverterApp:
         env["PYTHONUNBUFFERED"] = "1"
         env["COLUMNS"] = "120"
         env["TERM"] = "xterm"
-        env["TQDM_MININTERVAL"] = "2.0" # Also set for subprocesses
+        env["TQDM_MININTERVAL"] = "2.0" # Reduce progress bar spam
 
         try:
+            # Using a large bufsize and merging stderr into stdout
             self.current_process = subprocess.Popen(
                 cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, 
                 text=True, bufsize=1, encoding='utf-8', errors='replace', env=env
             )
 
-            # INCREASED from 256 to 16384
-            while True:
-                chunk = self.current_process.stdout.read(16384) 
-                if not chunk and self.current_process.poll() is not None:
-                    break
-                if chunk:
-                    sys.stdout.write(chunk)
-
+            # Read line by line is safer for progress bars
+            for line in self.current_process.stdout:
                 if self.stop_requested:
                     self.current_process.kill()
                     return False
+                sys.stdout.write(line)
             
             return (self.current_process.wait() == 0)
         except Exception as e:
