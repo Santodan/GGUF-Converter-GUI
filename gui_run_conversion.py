@@ -730,10 +730,11 @@ class ConverterApp:
 
     def process_queue(self):
         try:
-            # Process all pending messages in one go to keep UI real-time
             self.log_display.configure(state='normal')
             updates_made = False
+            pending_text = []
             
+            # 1. Grab everything in the queue right now
             while True:
                 try:
                     msg = self.msg_queue.get_nowait()
@@ -743,45 +744,45 @@ class ConverterApp:
                 if msg[0] == "UPDATE_GRID":
                     if self.progress_window and self.progress_window.winfo_exists():
                         self.progress_window.update_status(msg[1], msg[2], msg[3])
-                
                 elif msg[0] == "RAW":
+                    pending_text.append(msg[1])
                     updates_made = True
-                    text = msg[1]
-                    
-                    # 1. Handle ANSI "Cursor Up" (Hugging Face multi-bar)
-                    if "\x1b[A" in text:
-                        count = text.count("\x1b[A")
-                        insert_pos = self.log_display.index("insert")
-                        line = int(insert_pos.split('.')[0])
-                        new_line = max(1, line - count)
-                        self.log_display.mark_set("insert", f"{new_line}.0")
-                        text = text.replace("\x1b[A", "")
 
-                    # 2. Handle Progress Bar Overwrite (\r)
-                    if '\r' in text:
-                        # Only take the text after the last \r in this chunk
-                        parts = text.split('\r')
-                        self.log_display.delete("insert linestart", "insert lineend")
-                        self.log_display.insert("insert", parts[-1])
-                    else:
-                        # 3. Regular text
-                        self.log_display.insert("insert", text)
-                    
-                    # 4. Auto-scroll logic: only if we are at the end
-                    if "\n" in text:
-                        self.log_display.mark_set("insert", "end")
-                        self.log_display.see("end")
-
+            # 2. If we have text, process it as a single block
             if updates_made:
-                # Force Tkinter to redraw immediately to prevent "frozen" look
-                self.root.update_idletasks()
-                
+                text = "".join(pending_text)
+                at_bottom = self.log_display.yview()[1] > 0.9
+
+                # Filter \r (progress bars) to only keep the latest update
+                if '\r' in text:
+                    lines = text.split('\n')
+                    cleaned = []
+                    for l in lines:
+                        cleaned.append(l.split('\r')[-1])
+                    text = "\n".join(cleaned)
+                    # Clear current line in GUI to mimic the console behavior
+                    self.log_display.delete("insert linestart", "insert lineend")
+
+                # Handle ANSI 'Cursor Up'
+                if "\x1b[A" in text:
+                    count = text.count("\x1b[A")
+                    line_idx = int(self.log_display.index("insert").split('.')[0])
+                    self.log_display.mark_set("insert", f"{max(1, line_idx - count)}.0")
+                    text = text.replace("\x1b[A", "")
+
+                self.log_display.insert("insert", text)
+                if at_bottom: self.log_display.see("end")
+
+                # Log Trimming (Max 3000 lines) to keep GUI responsive
+                total_lines = int(self.log_display.index('end-1c').split('.')[0])
+                if total_lines > 3000:
+                    self.log_display.delete("1.0", "500.0")
+
             self.log_display.configure(state='disabled')
-            
-        except Exception as e:
+        except:
             pass
             
-        self.root.after(10, self.process_queue)
+        self.root.after(30, self.process_queue) # 30ms is plenty fast
 
     def start_thread(self):
         if self.is_running: return
@@ -818,6 +819,8 @@ class ConverterApp:
 
     def run_main_logic(self, gen_list, up_list):
         # Identify the current log file from the logger
+        import os
+        os.environ["TQDM_MININTERVAL"] = "2.0" # Only update progress every 2 seconds
         log_file_handle = None
         for handler in logging.getLogger().handlers:
             if isinstance(handler, logging.FileHandler):
@@ -1077,8 +1080,9 @@ class ConverterApp:
         logging.info(f"CMD: {' '.join(cmd)}")
         env = os.environ.copy()
         env["PYTHONUNBUFFERED"] = "1"
-        env["COLUMNS"] = "100"  # Ensures progress bars don't wrap and break logic
-        env["TERM"] = "xterm"   # Forces standard terminal control codes
+        env["COLUMNS"] = "120"
+        env["TERM"] = "xterm"
+        env["TQDM_MININTERVAL"] = "2.0" # Also set for subprocesses
 
         try:
             self.current_process = subprocess.Popen(
@@ -1086,14 +1090,13 @@ class ConverterApp:
                 text=True, bufsize=1, encoding='utf-8', errors='replace', env=env
             )
 
-            # Read in larger chunks for speed (prevents GUI lag)
+            # INCREASED from 256 to 16384
             while True:
-                chunk = self.current_process.stdout.read(256)
+                chunk = self.current_process.stdout.read(16384) 
                 if not chunk and self.current_process.poll() is not None:
                     break
                 if chunk:
                     sys.stdout.write(chunk)
-                    # No need to flush manually, DualOutput handles it
 
                 if self.stop_requested:
                     self.current_process.kill()
