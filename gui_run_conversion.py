@@ -17,6 +17,25 @@ from datetime import datetime
 import math
 import importlib.util
 
+global THEMES
+THEMES = {
+    "Default Light": {
+        "bg": "#f0f0f0", "fg": "#000000", "frame_bg": "#f0f0f0", "label_fg": "blue",
+        "btn_bg": "#e1e1e1", "btn_fg": "#000000", "entry_bg": "#ffffff", "entry_fg": "#000000",
+        "log_bg": "#1e1e1e", "log_fg": "#d4d4d4", "action_bg": "#ddffdd"
+    },
+    "Visual Studio Dark": {
+        "bg": "#1e1e1e", "fg": "#cccccc", "frame_bg": "#1e1e1e", "label_fg": "#569cd6",
+        "btn_bg": "#333333", "btn_fg": "#cccccc", "entry_bg": "#2d2d2d", "entry_fg": "#9cdcfe",
+        "log_bg": "#000000", "log_fg": "#dcdcdc", "action_bg": "#0e639c"
+    },
+    "OLED Night": {
+        "bg": "#000000", "fg": "#ffffff", "frame_bg": "#000000", "label_fg": "#bb86fc",
+        "btn_bg": "#121212", "btn_fg": "#ffffff", "entry_bg": "#1e1e1e", "entry_fg": "#03dac6",
+        "log_bg": "#000000", "log_fg": "#ffffff", "action_bg": "#3700b3"
+    }
+}
+
 if platform.system() == "Windows":
     import ctypes
     from ctypes import wintypes
@@ -268,6 +287,7 @@ if TORCH_AVAILABLE:
         def __init__(self, quant_dtype: str = "float8_e5m2"):
             self.quant_dtype = quant_dtype
             self.gui_ansi_buffer = ""
+            self.current_theme = THEMES["Default"]
         def quantize_weights(self, weight: torch.Tensor) -> torch.Tensor:
             if not weight.is_floating_point(): return weight
             dev = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
@@ -335,18 +355,28 @@ class DualOutput:
         self.original_stream.flush()
 
 class ProgressPopup(tk.Toplevel):
-    def __init__(self, parent):
-        super().__init__(parent)
+    def __init__(self, app_instance):
+        super().__init__(app_instance.root)
+        self.app = app_instance 
         self.title("Job Progress Status")
         self.geometry("700x500")
         self.protocol("WM_DELETE_WINDOW", self.hide_window)
         
-        self.canvas = Canvas(self, bg="#f0f0f0")
+        # Get theme shortcut
+        t = self.app.current_theme
+        self.configure(bg=t["bg"]) # Set window background
+        
+        # 1. Initialize Canvas with theme background
+        self.canvas = tk.Canvas(self, highlightthickness=0, borderwidth=0, bg=t["bg"])
+        
+        # 2. Scrollbars (Note: ttk scrollbars have limited theming, but we place them on themed bg)
         self.scroll_y = ttk.Scrollbar(self, orient="vertical", command=self.canvas.yview)
         self.scroll_x = ttk.Scrollbar(self, orient="horizontal", command=self.canvas.xview)
-        self.inner = tk.Frame(self.canvas, bg="#f0f0f0")
         
-        self.canvas.create_window((0, 0), window=self.inner, anchor="nw")
+        # 3. Inner Frame with theme background
+        self.inner = tk.Frame(self.canvas, bg=t["bg"])
+        
+        self.canvas.create_window((0, 0), window=self.inner, anchor="nw", tags="inner_win")
         self.canvas.configure(yscrollcommand=self.scroll_y.set, xscrollcommand=self.scroll_x.set)
         
         self.scroll_y.pack(side="right", fill="y")
@@ -362,26 +392,46 @@ class ProgressPopup(tk.Toplevel):
     def setup_grid(self, models, steps):
         for w in self.inner.winfo_children(): w.destroy()
         self.cells = {}
-        tk.Label(self.inner, text="Model Name", font=("Arial", 9, "bold"), bg="#ddd", width=30, anchor="w").grid(row=0, column=0, sticky="nsew", padx=1, pady=1)
+        t = self.app.current_theme
+        
+        # Set the inner frame background explicitly again to be safe
+        self.inner.configure(bg=t["bg"])
+        
+        # Header Row
+        tk.Label(self.inner, text="Model Name", font=("Arial", 9, "bold"), 
+                 bg=t["btn_bg"], fg=t["fg"], width=30, anchor="w", relief="flat").grid(row=0, column=0, sticky="nsew", padx=1, pady=1)
         for i, step in enumerate(steps):
-            tk.Label(self.inner, text=step, font=("Arial", 8, "bold"), bg="#ddd", width=12).grid(row=0, column=i+1, sticky="nsew", padx=1, pady=1)
+            tk.Label(self.inner, text=step, font=("Arial", 8, "bold"), 
+                     bg=t["btn_bg"], fg=t["fg"], width=12, relief="flat").grid(row=0, column=i+1, sticky="nsew", padx=1, pady=1)
+        
+        # Data Rows
         for r, model in enumerate(models):
             row = r + 1
-            tk.Label(self.inner, text=model[:40], anchor="w", bg="white").grid(row=row, column=0, sticky="nsew", padx=1, pady=1)
+            tk.Label(self.inner, text=model[:40], anchor="w", bg=t["frame_bg"], fg=t["fg"]).grid(row=row, column=0, sticky="nsew", padx=1, pady=1)
             for c, step in enumerate(steps):
-                lbl = tk.Label(self.inner, text="...", bg="#cccccc", width=12)
+                # Use theme bg for the empty "..." state
+                lbl = tk.Label(self.inner, text="...", bg=t["bg"], fg=t["fg"], width=12)
                 lbl.grid(row=row, column=c+1, sticky="nsew", padx=1, pady=1)
                 self.cells[(model, step)] = lbl
 
     def update_status(self, model, step, status):
         if (model, step) not in self.cells: return
         lbl = self.cells[(model, step)]
-        if status == "RUNNING": lbl.config(bg="#ffff99", text="Running")
-        elif status == "DONE": lbl.config(bg="#99ff99", text="Done")
-        elif status == "ERROR": lbl.config(bg="#ff9999", text="Error")
-        elif status == "SKIP": lbl.config(bg="#eeeeee", text="-")
-        elif status == "CANCEL": lbl.config(bg="#ffcc00", text="Cancel")
-        else: lbl.config(bg="#cccccc", text="...")
+        t = self.app.current_theme
+        is_dark = t["bg"] != "#f0f0f0"
+        
+        if status == "RUNNING":
+            lbl.config(bg="#ffff99" if not is_dark else "#5c5c00", text="Running", fg="black" if not is_dark else "white")
+        elif status == "DONE":
+            lbl.config(bg="#99ff99" if not is_dark else "#004400", text="Done", fg="black" if not is_dark else "white")
+        elif status == "ERROR":
+            lbl.config(bg="#ff9999" if not is_dark else "#440000", text="Error", fg="black" if not is_dark else "white")
+        elif status == "SKIP":
+            lbl.config(bg=t["btn_bg"], text="-", fg=t["fg"])
+        elif status == "CANCEL":
+            lbl.config(bg="#ffcc00" if not is_dark else "#886600", text="Cancel", fg="black" if not is_dark else "white")
+        else:
+            lbl.config(bg=t["bg"], text="...", fg=t["fg"])
 
 # --- MAIN APP ---
 class ConverterApp:
@@ -389,35 +439,49 @@ class ConverterApp:
         self.root = root
         self.root.title("GGUF & FP8 Manager")
         self.root.geometry("1300x850")
+        
+        # 1. Initialize Theme first
+        self.current_theme = THEMES["Default Light"]
+        self.gui_ansi_buffer = ""
 
-        self.extract_model_var = tk.BooleanVar()
-        self.extract_clip_var = tk.BooleanVar()
-        self.extract_vae_var = tk.BooleanVar()
+        # 2. Initialize ALL Logic Variables (Prevents the AttributeError)
+        self.python_path_var = tk.StringVar(value=os.path.normpath(sys.executable))
+        self.out_dir_var = tk.StringVar()
+        self.out_mode_var = tk.StringVar(value="folder")
+        self.upload_mode_var = tk.StringVar(value="global")
+        self.do_upload = tk.BooleanVar(value=False)
+        self.hf_token = tk.StringVar(value=os.getenv("HUGGING_FACE_HUB_TOKEN",""))
+        self.hf_repo_gguf = tk.StringVar()
+        self.hf_repo_fp8 = tk.StringVar()
+        self.hf_dest_gguf = tk.StringVar()
+        self.hf_dest_fp8 = tk.StringVar()
+        self.cleanup_mode = tk.StringVar(value="per_model")
+        self.shutdown_var = tk.BooleanVar(value=False)
+        self.keep_dequant_var = tk.BooleanVar(value=False)
+        self.keep_convert_var = tk.BooleanVar(value=False)
         
-        script_dir = os.path.dirname(os.path.abspath(__file__))
-        self.settings_file = os.path.join(script_dir, "last_run_settings.json")
-        
-        self.msg_queue = queue.Queue()
-        self.source_files = []
-        self.custom_file_data = {} 
-        
-        self.is_running = False
+        # Grid Storage
         self.quant_vars_gen = {}
         self.quant_vars_up = {}
         self.quant_vars_keep = {}
+
+        # Process State
+        script_dir = os.path.dirname(os.path.abspath(__file__))
+        self.settings_file = os.path.join(script_dir, "last_run_settings.json")
+        self.msg_queue = queue.Queue()
+        self.source_files = []
+        self.custom_file_data = {} 
+        self.is_running = False
         self.current_process = None
         self.stop_requested = False
         self.progress_window = None
-        
         self.quant_cmd = self.get_quantize_command()
-        self.root.protocol("WM_DELETE_WINDOW", self.on_close)
 
+        # 3. Build UI and Load settings
+        self.root.protocol("WM_DELETE_WINDOW", self.on_close)
         self._setup_ui()
         self._setup_logging()
-        
-        # --- Run Dependency Setup ---
         DependencyManager.check_and_setup(logging.info)
-        
         self.root.after(100, self.process_queue)
         self.load_settings(self.settings_file, silent=True)
 
@@ -449,20 +513,112 @@ class ConverterApp:
         
         # REMOVED TextHandler here because DualOutput now handles the UI directly.
 
+    def apply_theme(self, theme_data=None):
+        if theme_data:
+            self.current_theme = theme_data
+        
+        t = self.current_theme
+        self.root.configure(bg=t["bg"])
+        
+        def walk_and_paint(parent):
+            for child in parent.winfo_children():
+                try:
+                    # 1. Containers
+                    if isinstance(child, (tk.Frame, tk.LabelFrame, tk.PanedWindow, tk.Canvas)):
+                        # If it's a Canvas, we MUST set the background or we get grey gaps
+                        bg_color = t["frame_bg"] if isinstance(child, tk.LabelFrame) else t["bg"]
+                        child.configure(bg=bg_color)
+                        
+                        if isinstance(child, tk.LabelFrame):
+                            child.configure(fg=t["label_fg"])
+                        if isinstance(child, tk.Canvas):
+                            child.configure(highlightthickness=0, borderwidth=0)
+                        
+                        walk_and_paint(child)
+                    
+                    elif isinstance(child, tk.Label):
+                        # GGUF Labels match their container
+                        p_bg = child.master.cget("bg")
+                        child.configure(bg=p_bg, fg=t["fg"])
+                    
+                    # 3. Labels
+                    elif isinstance(child, tk.Label):
+                        p_bg = child.master.cget("bg")
+                        child.configure(bg=child.master.cget("bg"), fg=t["fg"])
+                    
+                    # 4. Inputs
+                    elif isinstance(child, tk.Entry):
+                        child.configure(bg=t["entry_bg"], fg=t["entry_fg"], insertbackground=t["entry_fg"])
+                    elif isinstance(child, tk.Listbox):
+                        child.configure(bg=t["entry_bg"], fg=t["entry_fg"], selectbackground=t["label_fg"])
+                    
+                    # 5. Checks/Radios
+                    elif isinstance(child, (tk.Checkbutton, tk.Radiobutton)):
+                        p_bg = child.master.cget("bg")
+                        child.configure(bg=p_bg, fg=t["fg"], selectcolor=t["entry_bg"], 
+                                        activebackground=p_bg, activeforeground=t["fg"])
+                    
+                    # 6. Text/Logs
+                    elif isinstance(child, (tk.Text, scrolledtext.ScrolledText)):
+                        child.configure(bg=t["log_bg"], fg=t["log_fg"], insertbackground=t["log_fg"])
+                except:
+                    pass
+
+        walk_and_paint(self.root)
+        
+        # FIX FOR POPUP: Re-paint the progress window containers
+        if self.progress_window and self.progress_window.winfo_exists():
+            self.progress_window.configure(bg=t["bg"])
+            # Specifically target the Canvas and Inner frame
+            self.progress_window.canvas.configure(bg=t["bg"])
+            self.progress_window.inner.configure(bg=t["bg"])
+            walk_and_paint(self.progress_window)
+
+    def open_theme_menu(self):
+        from tkinter import colorchooser
+        top = tk.Toplevel(self.root)
+        top.title("Theme Settings")
+        top.geometry("350x450")
+        
+        main_f = tk.Frame(top, padx=20, pady=20)
+        main_f.pack(fill="both", expand=True)
+
+        tk.Label(main_f, text="Select Preset:", font="Arial 10 bold").pack(pady=(0, 10))
+        
+        # Preset Buttons
+        for name, data in THEMES.items():
+            tk.Button(main_f, text=name, width=25, 
+                      command=lambda d=data: self.apply_theme(d)).pack(pady=2)
+
+        tk.Label(main_f, text="Custom Color Pickers:", font="Arial 10 bold").pack(pady=(20, 10))
+        
+        # Add a way to pick a custom background
+        def pick_bg():
+            color = colorchooser.askcolor(title="Choose Main BG")[1]
+            if color:
+                new_t = self.current_theme.copy()
+                new_t["bg"] = color
+                new_t["frame_bg"] = color
+                self.apply_theme(new_t)
+
+        tk.Button(main_f, text="Pick Custom Background", command=pick_bg).pack(fill="x", pady=2)
+        
+        tk.Button(main_f, text="DONE", bg="#ddffdd", command=top.destroy).pack(pady=20)
+
     def _setup_ui(self):
-        main_pane = tk.PanedWindow(self.root, orient=tk.VERTICAL, sashwidth=5)
+        c = self.current_theme
+        
+        main_pane = tk.PanedWindow(self.root, orient=tk.VERTICAL, sashwidth=5, bg=c["bg"], bd=0)
         main_pane.pack(fill="both", expand=True)
-        config_frame = tk.Frame(main_pane)
-        canvas = Canvas(config_frame, highlightthickness=0, borderwidth=0)
+        
+        config_frame = tk.Frame(main_pane, bg=c["bg"])
+        canvas = Canvas(config_frame, highlightthickness=0, borderwidth=0, bg=c["bg"])
         scrollbar = ttk.Scrollbar(config_frame, orient="vertical", command=canvas.yview)
-        self.content_frame = tk.Frame(canvas)
+        self.content_frame = tk.Frame(canvas, bg=c["bg"])
+
         def update_scrollregion(event):
-            # Wait for Tkinter to finish drawing internal padding
             canvas.update_idletasks()
-            # Calculate the area actually occupied by widgets
             bbox = canvas.bbox("all")
-            # If the content is smaller than the canvas, snap the scrollregion to the canvas height
-            # This is the "magic" that prevents the tiny phantom scroll
             canvas_height = canvas.winfo_height()
             if bbox[3] < canvas_height:
                 canvas.configure(scrollregion=(0, 0, bbox[2], canvas_height))
@@ -470,167 +626,177 @@ class ConverterApp:
                 canvas.configure(scrollregion=bbox)
 
         def sync_width(event):
-            # Ensure the inner frame is exactly as wide as the canvas viewing area
             canvas.itemconfig("inner", width=event.width)
 
         self.content_frame.bind("<Configure>", update_scrollregion)
         canvas.bind("<Configure>", sync_width)
+        
         def on_mousewheel(event):
             if platform.system() == 'Windows': canvas.yview_scroll(int(-1*(event.delta/120)), "units")
             else: canvas.yview_scroll(int(-1*event.delta), "units")
+        
         canvas.bind_all("<MouseWheel>", on_mousewheel)
         canvas.create_window((0, 0), window=self.content_frame, anchor="nw", tags="inner")
         canvas.configure(yscrollcommand=scrollbar.set)
         canvas.pack(side="left", fill="both", expand=True)
         scrollbar.pack(side="right", fill="y")
         main_pane.add(config_frame, height=750)
-        log_container = tk.Frame(main_pane)
+
+        log_container = tk.Frame(main_pane, bg=c["bg"])
         main_pane.add(log_container, minsize=150)
+        
         self.log_display = scrolledtext.ScrolledText(
-            log_container, 
-            height=12, 
-            font=("Consolas", 10), # Monospace is mandatory
-            wrap='none',           # Mandatory
-            bg="#1e1e1e", 
-            fg="#d4d4d4",
-            padx=5, pady=5,
-            undo=False
+            log_container, height=12, font=("Consolas", 10), wrap='none',
+            bg=c["log_bg"], fg=c["log_fg"], insertbackground=c["log_fg"],
+            padx=5, pady=5, undo=False
         )
         self.log_display.pack(side="left", fill="both", expand=True)
         
-        # Initialize the "Virtual Screen" (last 100 lines of terminal output)
+        # Terminal Mirror State
         self.terminal_buffer = [""] * 100 
-        self.term_cursor_line = 0 # Which line we are currently writing to
-        btn_clear = tk.Button(log_container, text="CLEAR\nLOGS", bg="#eee", command=self.clear_logs)
+        self.term_cursor_line = 0 
+
+        btn_clear = tk.Button(log_container, text="CLEAR\nLOGS", bg=c["btn_bg"], fg=c["btn_fg"], command=self.clear_logs)
         btn_clear.pack(side="right", fill="y", padx=2)
 
         # 1. Environment
-        f_env = tk.LabelFrame(self.content_frame, text="1. Environment", padx=5, pady=5, fg="blue")
+        f_env = tk.LabelFrame(self.content_frame, text="1. Environment", padx=5, pady=5, bg=c["frame_bg"], fg=c["label_fg"])
         f_env.pack(fill="x", padx=5, pady=5)
-        self.python_path_var = tk.StringVar(value=os.path.normpath(sys.executable))
-        tk.Entry(f_env, textvariable=self.python_path_var).pack(side="left", fill="x", expand=True, padx=(0,5))
-        tk.Button(f_env, text="Browse...", command=self.browse_python).pack(side="left", padx=2)
-        tk.Button(f_env, text="Restart", command=self.restart).pack(side="left", padx=2)
+        tk.Entry(f_env, textvariable=self.python_path_var, bg=c["entry_bg"], fg=c["entry_fg"], insertbackground=c["entry_fg"]).pack(side="left", fill="x", expand=True, padx=(0,5))
+        tk.Button(f_env, text="Browse...", bg=c["btn_bg"], fg=c["btn_fg"], command=self.browse_python).pack(side="left", padx=2)
+        tk.Button(f_env, text="Restart", bg=c["btn_bg"], fg=c["btn_fg"], command=self.restart).pack(side="left", padx=2)
 
         # 2. Output
-        f_mode = tk.LabelFrame(self.content_frame, text="2. Local Output Configuration", padx=5, pady=5)
+        f_mode = tk.LabelFrame(self.content_frame, text="2. Local Output Configuration", padx=5, pady=5, bg=c["frame_bg"], fg=c["label_fg"])
         f_mode.pack(fill="x", padx=5, pady=5)
-        self.out_mode_var = tk.StringVar(value="folder") 
-        tk.Label(f_mode, text="Output Strategy:", fg="blue").pack(anchor="w")
-        modes_frame = tk.Frame(f_mode)
+        tk.Label(f_mode, text="Output Strategy:", bg=c["frame_bg"], fg=c["fg"]).pack(anchor="w")
+        modes_frame = tk.Frame(f_mode, bg=c["frame_bg"])
         modes_frame.pack(fill="x")
-        tk.Radiobutton(modes_frame, text="Folder per Model", variable=self.out_mode_var, value="folder", command=self.refresh_file_list_ui).pack(side="left")
-        tk.Radiobutton(modes_frame, text="All in One Folder (Flat)", variable=self.out_mode_var, value="flat", command=self.refresh_file_list_ui).pack(side="left")
-        tk.Radiobutton(modes_frame, text="Custom Output Path (Per File)", variable=self.out_mode_var, value="custom", command=self.refresh_file_list_ui).pack(side="left")
-        self.global_out_frame = tk.Frame(self.content_frame)
-        tk.Label(self.global_out_frame, text="Base Output Dir:").pack(side="left")
-        self.out_dir_var = tk.StringVar()
-        tk.Entry(self.global_out_frame, textvariable=self.out_dir_var).pack(side="left", fill="x", expand=True, padx=5)
-        tk.Button(self.global_out_frame, text="Browse", command=self.browse_out).pack(side="left")
-        self.global_out_frame.pack(fill="x", padx=10, pady=5, after=f_mode) 
+        for txt, val in [("Folder per Model", "folder"), ("All in One Folder (Flat)", "flat"), ("Custom Output Path", "custom")]:
+            tk.Radiobutton(modes_frame, text=txt, variable=self.out_mode_var, value=val, bg=c["frame_bg"], fg=c["fg"], selectcolor=c["entry_bg"], command=self.refresh_file_list_ui).pack(side="left")
+
+        self.global_out_frame = tk.Frame(self.content_frame, bg=c["bg"])
+        tk.Label(self.global_out_frame, text="Base Output Dir:", bg=c["bg"], fg=c["fg"]).pack(side="left")
+        tk.Entry(self.global_out_frame, textvariable=self.out_dir_var, bg=c["entry_bg"], fg=c["entry_fg"], insertbackground=c["entry_fg"]).pack(side="left", fill="x", expand=True, padx=5)
+        tk.Button(self.global_out_frame, text="Browse", bg=c["btn_bg"], fg=c["btn_fg"], command=self.browse_out).pack(side="left")
+        self.global_out_frame.pack(fill="x", padx=10, pady=5) 
 
         # 3. Files
-        self.f_files_container = tk.LabelFrame(self.content_frame, text="3. Input Files & Routing Table", padx=5, pady=5)
+        self.f_files_container = tk.LabelFrame(self.content_frame, text="3. Input Files & Routing Table", padx=5, pady=5, bg=c["frame_bg"], fg=c["label_fg"])
         self.f_files_container.pack(fill="x", padx=5, pady=5)
-        btn_box = tk.Frame(self.f_files_container)
+        btn_box = tk.Frame(self.f_files_container, bg=c["frame_bg"])
         btn_box.pack(fill="x", pady=2)
-        tk.Button(btn_box, text="Add Files...", command=self.add_files, bg="#e6f2ff").pack(side="left", fill="x", expand=True)
-        tk.Button(btn_box, text="Remove Selected", command=self.remove_selected_files, bg="#fff0f0").pack(side="left", padx=5)
-        tk.Button(btn_box, text="Clear List", command=self.clear_files).pack(side="left", padx=5)
-        self.simple_list_frame = tk.Frame(self.f_files_container)
-        self.file_listbox = tk.Listbox(self.simple_list_frame, height=6, selectmode=tk.EXTENDED)
+        tk.Button(btn_box, text="Add Files...", bg=c["btn_bg"], fg=c["btn_fg"], command=self.add_files).pack(side="left", fill="x", expand=True)
+        tk.Button(btn_box, text="Remove Selected", bg=c["btn_bg"], fg=c["btn_fg"], command=self.remove_selected_files).pack(side="left", padx=5)
+        tk.Button(btn_box, text="Clear List", bg=c["btn_bg"], fg=c["btn_fg"], command=self.clear_files).pack(side="left", padx=5)
+        
+        self.simple_list_frame = tk.Frame(self.f_files_container, bg=c["frame_bg"])
+        self.file_listbox = tk.Listbox(self.simple_list_frame, height=6, selectmode=tk.EXTENDED, bg=c["entry_bg"], fg=c["entry_fg"])
         self.file_listbox.pack(side="left", fill="x", expand=True)
         self.simple_list_frame.pack(fill="x", expand=True) 
-        self.local_custom_frame = tk.Frame(self.f_files_container)
+        self.local_custom_frame = tk.Frame(self.f_files_container, bg=c["frame_bg"])
 
         # 4. Quants
-        f_quant = tk.LabelFrame(self.content_frame, text="4. Quantization", padx=5, pady=5)
+        f_quant = tk.LabelFrame(self.content_frame, text="4. Quantization", padx=5, pady=5, bg=c["frame_bg"], fg=c["label_fg"])
         f_quant.pack(fill="x", padx=5, pady=5)
-        if not TORCH_AVAILABLE: tk.Label(f_quant, text="⚠️ Torch missing. FP8 disabled.", fg="red").grid(row=0, column=0, columnspan=10)
+        if not TORCH_AVAILABLE: tk.Label(f_quant, text="⚠️ Torch missing. FP8 disabled.", bg=c["frame_bg"], fg="red").grid(row=0, column=0, columnspan=10)
         for col_idx, group in enumerate(QUANT_GROUPS):
             base_col = col_idx * 5  
-            tk.Label(f_quant, text="Type", font="Arial 8 bold").grid(row=1, column=base_col, sticky="w")
-            tk.Label(f_quant, text="G", font="Arial 8 bold", fg="blue", width=2).grid(row=1, column=base_col+1)
-            tk.Label(f_quant, text="U", font="Arial 8 bold", fg="purple", width=2).grid(row=1, column=base_col+2)
-            tk.Label(f_quant, text="K", font="Arial 8 bold", fg="green", width=2).grid(row=1, column=base_col+3)
-            tk.Label(f_quant, text="|", fg="#ccc").grid(row=1, column=base_col+4, rowspan=10, sticky="ns")
+            tk.Label(f_quant, text="Type", font="Arial 8 bold", bg=c["frame_bg"], fg=c["fg"]).grid(row=1, column=base_col, sticky="w")
+            tk.Label(f_quant, text="G", font="Arial 8 bold", bg=c["frame_bg"], fg=c["fg"], width=2).grid(row=1, column=base_col+1)
+            tk.Label(f_quant, text="U", font="Arial 8 bold", bg=c["frame_bg"], fg=c["fg"], width=2).grid(row=1, column=base_col+2)
+            tk.Label(f_quant, text="K", font="Arial 8 bold", bg=c["frame_bg"], fg=c["fg"], width=2).grid(row=1, column=base_col+3)
+            tk.Label(f_quant, text="|", bg=c["frame_bg"], fg=c["btn_bg"]).grid(row=1, column=base_col+4, rowspan=10, sticky="ns")
             for i, q in enumerate(group):
                 row = i + 2
-                tk.Label(f_quant, text=q).grid(row=row, column=base_col, sticky="w")
+                tk.Label(f_quant, text=q, bg=c["frame_bg"], fg=c["fg"]).grid(row=row, column=base_col, sticky="w")
                 vg, vu, vk = tk.BooleanVar(), tk.BooleanVar(), tk.BooleanVar()
-                self.quant_vars_gen[q] = vg
-                self.quant_vars_up[q] = vu
-                self.quant_vars_keep[q] = vk
+                self.quant_vars_gen[q], self.quant_vars_up[q], self.quant_vars_keep[q] = vg, vu, vk
                 state = "normal"
                 if "FP8" in q and not TORCH_AVAILABLE: state = "disabled"
                 def sync(g=vg, u=vu, k=vk): 
-                    if g.get(): 
-                        u.set(True)
-                        k.set(True)
-                    else: 
-                        u.set(False)
-                        k.set(False)
-                tk.Checkbutton(f_quant, variable=vg, command=sync, state=state).grid(row=row, column=base_col+1)
-                tk.Checkbutton(f_quant, variable=vu, state=state).grid(row=row, column=base_col+2)
-                tk.Checkbutton(f_quant, variable=vk, state=state).grid(row=row, column=base_col+3)
+                    if g.get(): u.set(True); k.set(True)
+                tk.Checkbutton(f_quant, variable=vg, command=sync, state=state, bg=c["frame_bg"], selectcolor=c["entry_bg"]).grid(row=row, column=base_col+1)
+                tk.Checkbutton(f_quant, variable=vu, state=state, bg=c["frame_bg"], selectcolor=c["entry_bg"]).grid(row=row, column=base_col+2)
+                tk.Checkbutton(f_quant, variable=vk, state=state, bg=c["frame_bg"], selectcolor=c["entry_bg"]).grid(row=row, column=base_col+3)
 
-        # 5. Upload
-        f_sets = tk.LabelFrame(self.content_frame, text="5. Global Settings & Upload", padx=5, pady=5)
+        # --- 5. Global Settings & Upload ---
+        f_sets = tk.LabelFrame(self.content_frame, text="5. Global Settings & Upload", padx=10, pady=10, bg=c["frame_bg"], fg=c["label_fg"])
         f_sets.pack(fill="x", padx=5, pady=5)
+        f_sets.columnconfigure(2, weight=1) # Allow Token entry to stretch
+
         self.do_upload = tk.BooleanVar()
-        tk.Checkbutton(f_sets, text="Enable Upload", variable=self.do_upload).grid(row=0, column=0, sticky="w")
-        tk.Label(f_sets, text="Token:").grid(row=0, column=1, sticky="e")
-        self.hf_token = tk.StringVar(value=os.getenv("HUGGING_FACE_HUB_TOKEN",""))
-        tk.Entry(f_sets, textvariable=self.hf_token, show="*").grid(row=0, column=2, columnspan=3, sticky="ew", padx=5)
-        ttk.Separator(f_sets, orient="horizontal").grid(row=1, column=0, columnspan=6, sticky="ew", pady=5)
-        tk.Label(f_sets, text="Upload Strategy:", fg="purple").grid(row=2, column=0, sticky="e")
-        self.upload_mode_var = tk.StringVar(value="global")
-        tk.Radiobutton(f_sets, text="Use Global Repos (Below)", variable=self.upload_mode_var, value="global", command=self.refresh_upload_ui).grid(row=2, column=1, columnspan=1, sticky="w")
-        tk.Radiobutton(f_sets, text="Custom Repos per File (Table)", variable=self.upload_mode_var, value="custom", command=self.refresh_upload_ui).grid(row=2, column=2, columnspan=2, sticky="w")
+        tk.Checkbutton(f_sets, text="Enable Upload", variable=self.do_upload, 
+                       bg=c["frame_bg"], fg=c["fg"], selectcolor=c["entry_bg"]).grid(row=0, column=0, sticky="w")
         
-        self.global_upload_frame = tk.Frame(f_sets)
-        self.global_upload_frame.grid(row=3, column=0, columnspan=5, sticky="ew")
-        tk.Label(self.global_upload_frame, text="GGUF Repo:", fg="blue").grid(row=0, column=0, sticky="e")
-        self.hf_repo_gguf = tk.StringVar()
-        tk.Entry(self.global_upload_frame, textvariable=self.hf_repo_gguf).grid(row=0, column=1, sticky="ew", padx=5)
-        tk.Label(self.global_upload_frame, text="FP8 Repo:", fg="green").grid(row=0, column=2, sticky="e")
-        self.hf_repo_fp8 = tk.StringVar()
-        tk.Entry(self.global_upload_frame, textvariable=self.hf_repo_fp8).grid(row=0, column=3, sticky="ew", padx=5)
-        tk.Label(self.global_upload_frame, text="GGUF Folder:").grid(row=1, column=0, sticky="e")
-        self.hf_dest_gguf = tk.StringVar()
-        tk.Entry(self.global_upload_frame, textvariable=self.hf_dest_gguf).grid(row=1, column=1, sticky="ew", padx=5)
-        tk.Label(self.global_upload_frame, text="FP8 Folder:").grid(row=1, column=2, sticky="e")
-        self.hf_dest_fp8 = tk.StringVar()
-        tk.Entry(self.global_upload_frame, textvariable=self.hf_dest_fp8).grid(row=1, column=3, sticky="ew", padx=5)
-        self.global_upload_frame.columnconfigure(1, weight=1)
-        self.global_upload_frame.columnconfigure(3, weight=1)
-        self.custom_upload_frame = tk.Frame(f_sets)
+        tk.Label(f_sets, text="Token:", bg=c["frame_bg"], fg=c["fg"]).grid(row=0, column=1, sticky="e", padx=(10, 2))
         
-        self.footer_frame = tk.Frame(f_sets)
-        self.footer_frame.grid(row=5, column=0, columnspan=5, sticky="ew", pady=5)
+        tk.Entry(f_sets, textvariable=self.hf_token, show="*", 
+                 bg=c["entry_bg"], fg=c["entry_fg"], insertbackground=c["entry_fg"]).grid(row=0, column=2, columnspan=3, sticky="ew")
+        
+        ttk.Separator(f_sets, orient="horizontal").grid(row=1, column=0, columnspan=6, sticky="ew", pady=10)
+        
+        tk.Label(f_sets, text="Upload Strategy:", bg=c["frame_bg"], fg=c["fg"]).grid(row=2, column=0, sticky="e")
+        
+        strat_frame = tk.Frame(f_sets, bg=c["frame_bg"])
+        strat_frame.grid(row=2, column=1, columnspan=4, sticky="w")
+        
+        tk.Radiobutton(strat_frame, text="Use Global Repos", variable=self.upload_mode_var, value="global", 
+                       bg=c["frame_bg"], fg=c["fg"], selectcolor=c["entry_bg"], command=self.refresh_upload_ui).pack(side="left", padx=5)
+        tk.Radiobutton(strat_frame, text="Custom per File", variable=self.upload_mode_var, value="custom", 
+                       bg=c["frame_bg"], fg=c["fg"], selectcolor=c["entry_bg"], command=self.refresh_upload_ui).pack(side="left", padx=5)
+        
+        # This container holds either the global grid or the custom table
+        self.upload_container = tk.Frame(f_sets, bg=c["frame_bg"])
+        self.upload_container.grid(row=3, column=0, columnspan=6, sticky="ew", pady=5)
+        self.upload_container.columnconfigure(0, weight=1)
+
+        # 5a. Global Upload Sub-Frame
+        self.global_upload_frame = tk.Frame(self.upload_container, bg=c["frame_bg"])
+        self.global_upload_frame.grid(row=0, column=0, sticky="ew")
+        
+        # Grid layout for global entries
+        labels = [("GGUF Repo:", self.hf_repo_gguf), ("FP8 Repo:", self.hf_repo_fp8), 
+                  ("GGUF Folder:", self.hf_dest_gguf), ("FP8 Folder:", self.hf_dest_fp8)]
+        
+        for i, (txt, var) in enumerate(labels):
+            r, col = divmod(i, 2)
+            tk.Label(self.global_upload_frame, text=txt, bg=c["frame_bg"], fg=c["fg"]).grid(row=r, column=col*2, sticky="e", pady=2)
+            tk.Entry(self.global_upload_frame, textvariable=var, width=30,
+                     bg=c["entry_bg"], fg=c["entry_fg"], insertbackground=c["entry_fg"]).grid(row=r, column=col*2+1, sticky="ew", padx=5, pady=2)
+        
+        self.global_upload_frame.columnconfigure((1, 3), weight=1)
+
+        # 5b. Custom Upload Sub-Frame
+        self.custom_upload_frame = tk.Frame(self.upload_container, bg=c["frame_bg"])
+        # (This frame is packed/hidden by refresh_upload_ui)
+
+        # 5c. Footer (Cleanup)
+        self.footer_frame = tk.Frame(f_sets, bg=c["frame_bg"])
+        self.footer_frame.grid(row=4, column=0, columnspan=6, sticky="ew", pady=(10, 0))
         ttk.Separator(self.footer_frame, orient="horizontal").pack(fill="x", pady=5)
-        f_c = tk.Frame(self.footer_frame)
-        f_c.pack()
-        tk.Label(f_c, text="Cleanup Strategy:").pack(side="left")
-        self.cleanup_mode = tk.StringVar(value="per_model")
-        tk.Radiobutton(f_c, text="After Each Model", variable=self.cleanup_mode, value="per_model").pack(side="left")
-        tk.Radiobutton(f_c, text="After All Complete", variable=self.cleanup_mode, value="all_end").pack(side="left")
         
-        self.keep_dequant_var = tk.BooleanVar(value=False)
-        self.keep_convert_var = tk.BooleanVar(value=False)
-        tk.Checkbutton(f_c, text="Keep Dequant Source", variable=self.keep_dequant_var, fg="orange").pack(side="left", padx=10)
-        tk.Checkbutton(f_c, text="Keep GGUF Source (CONVERT)", variable=self.keep_convert_var, fg="orange").pack(side="left")
-        f_sets.columnconfigure(2, weight=1)
+        f_c = tk.Frame(self.footer_frame, bg=c["frame_bg"])
+        f_c.pack(fill="x")
+        tk.Label(f_c, text="Cleanup Strategy:", bg=c["frame_bg"], fg=c["fg"]).pack(side="left")
+        tk.Radiobutton(f_c, text="After Each", variable=self.cleanup_mode, value="per_model", bg=c["frame_bg"], fg=c["fg"], selectcolor=c["entry_bg"]).pack(side="left", padx=5)
+        tk.Radiobutton(f_c, text="After All", variable=self.cleanup_mode, value="all_end", bg=c["frame_bg"], fg=c["fg"], selectcolor=c["entry_bg"]).pack(side="left", padx=5)
+        
+        tk.Checkbutton(f_c, text="Keep Dequant", variable=self.keep_dequant_var, bg=c["frame_bg"], fg=c["fg"], selectcolor=c["entry_bg"]).pack(side="left", padx=10)
+        tk.Checkbutton(f_c, text="Keep Source", variable=self.keep_convert_var, bg=c["frame_bg"], fg=c["fg"], selectcolor=c["entry_bg"]).pack(side="left")
 
         # 6. Actions
-        f_act = tk.Frame(self.content_frame)
+        f_act = tk.Frame(self.content_frame, bg=c["bg"])
         f_act.pack(fill="x", padx=5, pady=(10, 0))
-        self.shutdown_var = tk.BooleanVar()
-        tk.Checkbutton(f_act, text="Shutdown when done", variable=self.shutdown_var, fg="red").pack(side="left")
-        tk.Button(f_act, text="SHOW STATUS", command=self.show_progress_popup).pack(side="left", padx=20)
-        tk.Button(f_act, text="CANCEL", bg="#ffcccc", command=self.cancel_processing).pack(side="right")
-        self.btn_run = tk.Button(f_act, text="START PROCESSING", bg="#ddffdd", height=2, command=self.start_thread)
+        tk.Button(f_act, text="THEME", width=10, bg=c["btn_bg"], fg=c["btn_fg"], command=self.open_theme_menu).pack(side="left", padx=5)
+        tk.Checkbutton(f_act, text="Shutdown", variable=self.shutdown_var, bg=c["bg"], fg=c["fg"], selectcolor=c["entry_bg"]).pack(side="left")
+        tk.Button(f_act, text="SHOW STATUS", bg=c["btn_bg"], fg=c["btn_fg"], command=self.show_progress_popup).pack(side="left", padx=20)
+        tk.Button(f_act, text="CANCEL", bg="#662222" if c["bg"] != "#f0f0f0" else "#ffcccc", fg=c["btn_fg"], command=self.cancel_processing).pack(side="right")
+        self.btn_run = tk.Button(f_act, text="START PROCESSING", bg=c["action_bg"], 
+                                 fg="white" if c["bg"] != "#f0f0f0" else "black", height=2, command=self.start_thread)
         self.btn_run.pack(side="right", fill="x", expand=True, padx=5)
+        
+        self.root.after(10, self.apply_theme)
 
     def clear_logs(self):
         self.log_display.configure(state='normal')
@@ -656,16 +822,16 @@ class ConverterApp:
         if mode == "custom":
             self.global_upload_frame.grid_remove()
             self.build_upload_table()
-            self.custom_upload_frame.grid(row=3, column=0, columnspan=5, sticky="ew")
+            self.custom_upload_frame.grid(row=0, column=0, sticky="ew")
         else:
             self.custom_upload_frame.grid_remove()
-            self.global_upload_frame.grid()
+            self.global_upload_frame.grid(row=0, column=0, sticky="ew")
 
     def build_local_table(self):
         for w in self.local_custom_frame.winfo_children(): w.destroy()
         headers = ["File Name", "Output Path", "Remove"]
         for c, h in enumerate(headers): 
-            tk.Label(self.local_custom_frame, text=h, font="Arial 8 bold", bg="#ddd").grid(row=0, column=c, sticky="ew", padx=1)
+            tk.Label(self.local_custom_frame, text=h, font="Arial 8 bold").grid(row=0, column=c, sticky="ew", padx=1)
         self.local_custom_frame.columnconfigure(1, weight=1)
         for i, fpath in enumerate(self.source_files):
             row = i + 1
@@ -676,7 +842,7 @@ class ConverterApp:
             fr.grid(row=row, column=1, sticky="ew", padx=2)
             tk.Entry(fr, textvariable=dat["out"]).pack(side="left", fill="x", expand=True)
             tk.Button(fr, text="..", width=3, command=lambda d=dat: self.browse_file_out(d)).pack(side="right")
-            btn_rem = tk.Button(self.local_custom_frame, text="X", bg="#ffcccc", fg="red", font="Arial 8 bold",
+            btn_rem = tk.Button(self.local_custom_frame, text="X", font="Arial 8 bold",
                                 command=lambda f=fpath: self.remove_single_file(f))
             btn_rem.grid(row=row, column=2, padx=2, pady=1)
 
@@ -684,7 +850,7 @@ class ConverterApp:
         for w in self.custom_upload_frame.winfo_children(): w.destroy()
         headers = ["File", "GGUF Repo", "GGUF Folder", "FP8 Repo", "FP8 Folder", "Remove"]
         for c, h in enumerate(headers): 
-            tk.Label(self.custom_upload_frame, text=h, font="Arial 8 bold", bg="#ddd").grid(row=0, column=c, sticky="ew", padx=1)
+            tk.Label(self.custom_upload_frame, text=h, font="Arial 8 bold").grid(row=0, column=c, sticky="ew", padx=1)
         for c in range(5): self.custom_upload_frame.columnconfigure(c, weight=1)
         for i, fpath in enumerate(self.source_files):
             row = i + 1
@@ -695,7 +861,7 @@ class ConverterApp:
             tk.Entry(self.custom_upload_frame, textvariable=dat["gguf_d"]).grid(row=row, column=2, sticky="ew", padx=1)
             tk.Entry(self.custom_upload_frame, textvariable=dat["fp8_r"]).grid(row=row, column=3, sticky="ew", padx=1)
             tk.Entry(self.custom_upload_frame, textvariable=dat["fp8_d"]).grid(row=row, column=4, sticky="ew", padx=1)
-            btn_rem = tk.Button(self.custom_upload_frame, text="X", bg="#ffcccc", fg="red", font="Arial 8 bold",
+            btn_rem = tk.Button(self.custom_upload_frame, text="X", font="Arial 8 bold",
                                 command=lambda f=fpath: self.remove_single_file(f))
             btn_rem.grid(row=row, column=5, padx=2, pady=1)
 
@@ -762,7 +928,8 @@ class ConverterApp:
 
     def show_progress_popup(self):
         if self.progress_window is None or not self.progress_window.winfo_exists():
-            self.progress_window = ProgressPopup(self.root)
+            # Pass 'self' (the ConverterApp instance) instead of 'self.root'
+            self.progress_window = ProgressPopup(self) 
         self.progress_window.deiconify()
         self.progress_window.lift()
 
@@ -1133,13 +1300,13 @@ class ConverterApp:
                 
                 # 1. Identify which files belong to which repo
                 files_to_upload = []
-                for f in files: # The loop variable is 'f'
+                for f in files:
                     fname = os.path.basename(f)
                     if any(x in fname for x in ["-CONVERT", "-UnFixed", "-dequant"]): continue
                     
                     for q in up_list: 
                         if self._check_file_match_quant(fname, q):
-                            files_to_upload.append(f) # <--- MUST be 'f', not 'f_path'
+                            files_to_upload.append(f) # FIXED
                             break
                 
                 files_to_upload = list(set(files_to_upload)) 
@@ -1214,7 +1381,7 @@ class ConverterApp:
         env = os.environ.copy()
         env["PYTHONUNBUFFERED"] = "1"
         env["TERM"] = "xterm-256color"
-        #env["COLUMNS"] = "130" # Set a fixed width
+        env["COLUMNS"] = "130" # Set a fixed width
         env["TQDM_TTY"] = "1"  # CRITICAL: Forces tqdm to use \r updates
         env["PYTHONIOENCODING"] = "utf-8"
 
@@ -1283,7 +1450,8 @@ class ConverterApp:
             "k_convert": self.keep_convert_var.get(),
             "geometry": self.root.geometry(),
             "source_files": self.source_files, # Added
-            "custom_file_data": serializable_custom_data # Added
+            "custom_file_data": serializable_custom_data, # Added
+            "theme": self.current_theme
         }
         try: 
             with open(f, 'w') as jf:
@@ -1313,7 +1481,10 @@ class ConverterApp:
             if "k_dequant" in d: self.keep_dequant_var.set(d["k_dequant"])
             if "k_convert" in d: self.keep_convert_var.set(d["k_convert"])
             if "geometry" in d: self.root.geometry(d["geometry"])
-            
+            if "theme" in d: 
+                self.current_theme = d["theme"]
+                self.root.after(200, self.apply_theme)
+                        
             # 2. Source Files & Custom Data (Crucial for the Routing Tables)
             if "source_files" in d: 
                 self.source_files = d["source_files"]
