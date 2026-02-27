@@ -9,76 +9,98 @@ def extract_parts(src_path, dst_dir, extract_model, extract_clip, extract_vae):
     basename = os.path.splitext(os.path.basename(src_path))[0]
     os.makedirs(dst_dir, exist_ok=True)
 
-    # 1. EXTRACT MODEL (Diffusion/Transformer)
-    if extract_model:
-        print("Extracting Diffusion Model...")
-        model_sd = {k.replace("model.diffusion_model.", ""): v for k, v in sd.items() if k.startswith("model.diffusion_model.")}
-        if not model_sd: # For Flux/Wan/etc
-             model_sd = {k: v for k, v in sd.items() if "transformer." in k or "diffusion_model." in k}
-        if model_sd:
-            out_path = os.path.join(dst_dir, f"{basename}_model.safetensors")
-            save_file(model_sd, out_path)
-            print(f"Saved Model to: {out_path}")
-
-    # 2. EXTRACT VAE
+    # 1. EXTRACT VAE
     if extract_vae:
         print("Extracting VAE...")
-        vae_sd = {k.replace("first_stage_model.", "").replace("vae.", ""): v for k, v in sd.items() if k.startswith("first_stage_model.") or k.startswith("vae.")}
+        vae_sd = {}
+        for k in list(sd.keys()):
+            if k.startswith("first_stage_model."):
+                vae_sd[k.replace("first_stage_model.", "")] = sd.pop(k)
+            elif k.startswith("vae."):
+                vae_sd[k.replace("vae.", "")] = sd.pop(k)
         if vae_sd:
             out_path = os.path.join(dst_dir, f"{basename}_vae.safetensors")
             save_file(vae_sd, out_path)
-            print(f"Saved VAE to: {out_path}")
+            print(f"✅ Saved VAE")
 
-    # 3. EXTRACT CLIP (Enhanced Search Logic)
-    if extract_clip:
-        print("Extracting CLIP(s)...")
-        # These are the standard prefixes ComfyUI looks for
-        prefixes = ["clip_l.", "clip_g.", "clip_h.", "t5xxl.", "pile_t5xl.", "mt5xl.", "umt5xxl.", "t5base.", "gemma2_2b.", "llama.", "hydit_clip."]
+    # 2. EXTRACT MODEL (Diffusion)
+    if extract_model:
+        print("Extracting Diffusion Model...")
+        model_sd = {}
+        for k in list(sd.keys()):
+            if k.startswith("model.diffusion_model."):
+                model_sd[k.replace("model.diffusion_model.", "")] = sd.pop(k)
         
-        # Baked-in prefixes often used in SDXL/Illustrious/Flux
-        baked_containers = ["cond_stage_model.", "conditioner.embedders.0.", "conditioner.embedders.1.", "conditioner.embedders.2."]
+        if not model_sd:
+             for k in list(sd.keys()):
+                 if "transformer." in k or "diffusion_model." in k:
+                     model_sd[k] = sd.pop(k)
 
-        found_any = False
+        if model_sd:
+            out_path = os.path.join(dst_dir, f"{basename}_model.safetensors")
+            save_file(model_sd, out_path)
+            print(f"✅ Saved Model")
 
-        for prefix in prefixes:
+    # 3. EXTRACT CLIP (Exact Parity with ComfyUI CLIPSave logic)
+    if extract_clip:
+        print("Extracting CLIP components...")
+        
+        # In SDXL/Illustrious: 
+        # conditioner.embedders.0 = CLIP-L
+        # conditioner.embedders.1 = CLIP-G
+        
+        # We define search patterns that match ComfyUI's internal state_dict_prefix_replace
+        search_targets = [
+            ("conditioner.embedders.0.", "clip_l"),
+            ("conditioner.embedders.1.", "clip_g"),
+            ("conditioner.embedders.2.", "t5xxl"),
+            ("cond_stage_model.clip_l.", "clip_l"),
+            ("cond_stage_model.clip_g.", "clip_g"),
+            ("cond_stage_model.transformer.", "clip_l"),
+            ("cond_stage_model.", "clip_l"),
+        ]
+
+        for prefix, label in search_targets:
             current_clip_sd = {}
-            for k in list(sd.keys()):
-                target_key = None
+            # Step 1: Find all keys belonging to this embedder
+            target_keys = [k for k in sd.keys() if k.startswith(prefix)]
+            if not target_keys:
+                continue
+
+            for k in target_keys:
+                # Step 2: Pop from master to prevent "leaks" or duplicates
+                tensor = sd.pop(k)
                 
-                # Check for standard prefix
-                if k.startswith(prefix):
-                    target_key = k.replace(prefix, "")
-                else:
-                    # Check inside baked containers
-                    for container in baked_containers:
-                        if k.startswith(container + prefix):
-                            target_key = k.replace(container + prefix, "")
-                            break
-                        # Special case: SDXL baked models often just have 'transformer' inside the container
-                        elif k.startswith(container + "transformer.") and prefix in ["clip_l.", "clip_g."]:
-                             # We only do this if we haven't found a better match
-                             target_key = k.replace(container, "")
+                # Step 3: Strip the root prefix (e.g., 'conditioner.embedders.0.')
+                clean_key = k[len(prefix):]
+                
+                # Step 4: Strip 'transformer.' or 'model.' if it exists at the start
+                # This matches ComfyUI's replace_prefix["transformer."] = ""
+                if clean_key.startswith("transformer."):
+                    clean_key = clean_key[12:]
+                elif clean_key.startswith("model."):
+                    clean_key = clean_key[6:]
+                
+                current_clip_sd[clean_key] = tensor
 
-                if target_key:
-                    # ComfyUI strips 'transformer.' and 'model.' from the internal CLIP sd
-                    target_key = target_key.replace("transformer.", "").replace("model.", "")
-                    current_clip_sd[target_key] = sd[k]
+            if current_clip_sd:
+                # Step 5: Final validation of the label by checking tensor shapes
+                # This prevents the "1280 vs 768" error if a model has swapped indices
+                actual_label = label
+                test_key = "text_model.embeddings.token_embedding.weight"
+                if test_key not in current_clip_sd:
+                    # Fallback key check
+                    test_key = "token_embedding.weight"
+                
+                if test_key in current_clip_sd:
+                    dim = current_clip_sd[test_key].shape[-1]
+                    if dim == 768: actual_label = "clip_l"
+                    elif dim == 1280: actual_label = "clip_g"
+                    elif dim == 4096: actual_label = "t5xxl"
 
-            if current_clip_sd and len(current_clip_sd) > 5: # Ignore tiny fragments
-                p_name = prefix.rstrip('.')
-                out_path = os.path.join(dst_dir, f"{basename}_{p_name}.safetensors")
+                out_path = os.path.join(dst_dir, f"{basename}_{actual_label}.safetensors")
                 save_file(current_clip_sd, out_path)
-                print(f"Saved CLIP {p_name} to: {out_path}")
-                found_any = True
-
-        # Fallback for SD1.5 or models where CLIP has no prefix inside cond_stage_model
-        if not found_any:
-            clip_sd = {k.replace("cond_stage_model.transformer.", "").replace("cond_stage_model.", ""): v 
-                       for k, v in sd.items() if k.startswith("cond_stage_model.") and "diffusion_model" not in k}
-            if clip_sd:
-                out_path = os.path.join(dst_dir, f"{basename}_clip.safetensors")
-                save_file(clip_sd, out_path)
-                print(f"Saved CLIP (Standard) to: {out_path}")
+                print(f"✅ Saved {actual_label.upper()} ({len(current_clip_sd)} tensors)")
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
