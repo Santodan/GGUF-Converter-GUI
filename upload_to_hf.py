@@ -1,4 +1,3 @@
-# upload_to_hf_v4.py
 import os
 import sys
 import argparse
@@ -6,7 +5,8 @@ import glob
 import importlib
 
 # Dependency Checker
-REQUIRED_PACKAGES = {'huggingface-hub': 'huggingface_hub', 'prompt-toolkit': 'prompt_toolkit'}
+os.environ["HF_HUB_ENABLE_HF_TRANSFER"] = "1"
+REQUIRED_PACKAGES = {"hf-transfer": "hf_transfer", "huggingface-hub": "huggingface_hub", "prompt-toolkit": "prompt_toolkit"}
 missing_packages = []
 for package, import_name in REQUIRED_PACKAGES.items():
     try:
