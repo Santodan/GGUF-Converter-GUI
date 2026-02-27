@@ -19,9 +19,14 @@ import importlib.util
 
 if platform.system() == "Windows":
     import ctypes
+    from ctypes import wintypes
     kernel32 = ctypes.windll.kernel32
-    # Disable QuickEdit Mode (prevents console clicking from freezing the app)
-    kernel32.SetConsoleMode(kernel32.GetStdHandle(-10), 128)
+    hStdOut = kernel32.GetStdHandle(-11)
+    mode = wintypes.DWORD()
+    if kernel32.GetConsoleMode(hStdOut, ctypes.byref(mode)):
+        # 0x0004 = ENABLE_VIRTUAL_TERMINAL_PROCESSING
+        # 0x0008 = DISABLE_NEWLINE_AUTO_RETURN (Stops Windows from adding \n to \r)
+        kernel32.SetConsoleMode(hStdOut, mode.value | 0x0004 | 0x0008)
 
 # --- 0. AUTO-RESTART IN VENV ---
 def check_and_restart_in_venv():
@@ -255,12 +260,14 @@ except ImportError: TORCH_AVAILABLE = False
 QUANT_GROUPS = [
     ["F16", "BF16"], ["Q2_K"], ["Q3_K_S", "Q3_K_M", "Q3_K_L"],
     ["Q4_0", "Q4_K_S", "Q4_K_M"], ["Q5_0", "Q5_K_S", "Q5_K_M"],
-    ["Q6_K", "Q8_0"], ["FP8_E5M2", "FP8_E5M2 (All)"]
+    ["Q6_K", "Q8_0"], ["FP8_E5M2", "FP8_E5M2 (All)"], ["MODEL", "VAE", "CLIP"],
 ]
 
 if TORCH_AVAILABLE:
     class FP8Quantizer:
-        def __init__(self, quant_dtype: str = "float8_e5m2"): self.quant_dtype = quant_dtype
+        def __init__(self, quant_dtype: str = "float8_e5m2"):
+            self.quant_dtype = quant_dtype
+            self.gui_ansi_buffer = ""
         def quantize_weights(self, weight: torch.Tensor) -> torch.Tensor:
             if not weight.is_floating_point(): return weight
             dev = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
@@ -382,6 +389,10 @@ class ConverterApp:
         self.root = root
         self.root.title("GGUF & FP8 Manager")
         self.root.geometry("1300x850")
+
+        self.extract_model_var = tk.BooleanVar()
+        self.extract_clip_var = tk.BooleanVar()
+        self.extract_vae_var = tk.BooleanVar()
         
         script_dir = os.path.dirname(os.path.abspath(__file__))
         self.settings_file = os.path.join(script_dir, "last_run_settings.json")
@@ -442,11 +453,28 @@ class ConverterApp:
         main_pane = tk.PanedWindow(self.root, orient=tk.VERTICAL, sashwidth=5)
         main_pane.pack(fill="both", expand=True)
         config_frame = tk.Frame(main_pane)
-        canvas = Canvas(config_frame)
+        canvas = Canvas(config_frame, highlightthickness=0, borderwidth=0)
         scrollbar = ttk.Scrollbar(config_frame, orient="vertical", command=canvas.yview)
         self.content_frame = tk.Frame(canvas)
-        self.content_frame.bind("<Configure>", lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
-        canvas.bind("<Configure>", lambda e: canvas.itemconfig("inner", width=e.width))
+        def update_scrollregion(event):
+            # Wait for Tkinter to finish drawing internal padding
+            canvas.update_idletasks()
+            # Calculate the area actually occupied by widgets
+            bbox = canvas.bbox("all")
+            # If the content is smaller than the canvas, snap the scrollregion to the canvas height
+            # This is the "magic" that prevents the tiny phantom scroll
+            canvas_height = canvas.winfo_height()
+            if bbox[3] < canvas_height:
+                canvas.configure(scrollregion=(0, 0, bbox[2], canvas_height))
+            else:
+                canvas.configure(scrollregion=bbox)
+
+        def sync_width(event):
+            # Ensure the inner frame is exactly as wide as the canvas viewing area
+            canvas.itemconfig("inner", width=event.width)
+
+        self.content_frame.bind("<Configure>", update_scrollregion)
+        canvas.bind("<Configure>", sync_width)
         def on_mousewheel(event):
             if platform.system() == 'Windows': canvas.yview_scroll(int(-1*(event.delta/120)), "units")
             else: canvas.yview_scroll(int(-1*event.delta), "units")
@@ -458,8 +486,21 @@ class ConverterApp:
         main_pane.add(config_frame, height=750)
         log_container = tk.Frame(main_pane)
         main_pane.add(log_container, minsize=150)
-        self.log_display = scrolledtext.ScrolledText(log_container, height=10)
+        self.log_display = scrolledtext.ScrolledText(
+            log_container, 
+            height=12, 
+            font=("Consolas", 10), # Monospace is mandatory
+            wrap='none',           # Mandatory
+            bg="#1e1e1e", 
+            fg="#d4d4d4",
+            padx=5, pady=5,
+            undo=False
+        )
         self.log_display.pack(side="left", fill="both", expand=True)
+        
+        # Initialize the "Virtual Screen" (last 100 lines of terminal output)
+        self.terminal_buffer = [""] * 100 
+        self.term_cursor_line = 0 # Which line we are currently writing to
         btn_clear = tk.Button(log_container, text="CLEAR\nLOGS", bg="#eee", command=self.clear_logs)
         btn_clear.pack(side="right", fill="y", padx=2)
 
@@ -583,7 +624,7 @@ class ConverterApp:
 
         # 6. Actions
         f_act = tk.Frame(self.content_frame)
-        f_act.pack(fill="x", padx=5, pady=10)
+        f_act.pack(fill="x", padx=5, pady=(10, 0))
         self.shutdown_var = tk.BooleanVar()
         tk.Checkbutton(f_act, text="Shutdown when done", variable=self.shutdown_var, fg="red").pack(side="left")
         tk.Button(f_act, text="SHOW STATUS", command=self.show_progress_popup).pack(side="left", padx=20)
@@ -738,57 +779,64 @@ class ConverterApp:
         try:
             self.log_display.configure(state='normal')
             updates_made = False
-            pending_text = []
             
-            # 1. Grab everything in the queue right now
-            while True:
-                try:
-                    msg = self.msg_queue.get_nowait()
-                except queue.Empty:
-                    break
-                
+            while not self.msg_queue.empty():
+                msg = self.msg_queue.get_nowait()
                 if msg[0] == "UPDATE_GRID":
                     if self.progress_window and self.progress_window.winfo_exists():
                         self.progress_window.update_status(msg[1], msg[2], msg[3])
                 elif msg[0] == "RAW":
-                    pending_text.append(msg[1])
+                    data = msg[1]
                     updates_made = True
-
-            # 2. If we have text, process it as a single block
+                    
+                    i = 0
+                    while i < len(data):
+                        char = data[i]
+                        
+                        if char == '\r':
+                            # Move cursor to the start of the current line
+                            self.log_display.mark_set("insert", "insert linestart")
+                        
+                        elif char == '\n':
+                            # Move to the very end of all text to add a new line
+                            self.log_display.mark_set("insert", "end-1c")
+                            self.log_display.insert("insert", "\n")
+                        
+                        elif data[i:i+3] == "\x1b[A":
+                            # Move cursor UP one line (Multi-bar tqdm)
+                            curr_idx = self.log_display.index("insert")
+                            line, col = map(int, curr_idx.split('.'))
+                            if line > 1:
+                                self.log_display.mark_set("insert", f"{line - 1}.{col}")
+                            i += 2 
+                        
+                        elif char == '\x1b':
+                            pass # Skip other escape fragments
+                        
+                        else:
+                            # Overwrite Logic:
+                            # If we are NOT at the end of the current line (because of \r or Up),
+                            # we delete the character in front of us before inserting the new one.
+                            if self.log_display.compare("insert", "<", "insert lineend"):
+                                self.log_display.delete("insert")
+                            
+                            self.log_display.insert("insert", char)
+                        i += 1
+            
             if updates_made:
-                text = "".join(pending_text)
-                at_bottom = self.log_display.yview()[1] > 0.9
-
-                # Filter \r (progress bars) to only keep the latest update
-                if '\r' in text:
-                    lines = text.split('\n')
-                    cleaned = []
-                    for l in lines:
-                        cleaned.append(l.split('\r')[-1])
-                    text = "\n".join(cleaned)
-                    # Clear current line in GUI to mimic the console behavior
-                    self.log_display.delete("insert linestart", "insert lineend")
-
-                # Handle ANSI 'Cursor Up'
-                if "\x1b[A" in text:
-                    count = text.count("\x1b[A")
-                    line_idx = int(self.log_display.index("insert").split('.')[0])
-                    self.log_display.mark_set("insert", f"{max(1, line_idx - count)}.0")
-                    text = text.replace("\x1b[A", "")
-
-                self.log_display.insert("insert", text)
-                if at_bottom: self.log_display.see("end")
-
-                # Log Trimming (Max 3000 lines) to keep GUI responsive
+                # Always scroll to the insertion point so we follow the action
+                self.log_display.see("insert")
+                
+                # Trim logs only if they get excessively long (5000+ lines)
                 total_lines = int(self.log_display.index('end-1c').split('.')[0])
-                if total_lines > 3000:
+                if total_lines > 5000:
                     self.log_display.delete("1.0", "500.0")
 
             self.log_display.configure(state='disabled')
         except:
             pass
             
-        self.root.after(30, self.process_queue) # 30ms is plenty fast
+        self.root.after(30, self.process_queue)
 
     def start_thread(self):
         if self.is_running: return
@@ -799,19 +847,34 @@ class ConverterApp:
         if not gen and not up_only: return messagebox.showerror("Error", "Select at least one Generate or Upload option.")
         
         self.stop_requested = False
-        steps = []
+        
+        # Define Order and Groups
         SORT_ORDER = ["Q2_K", "Q3_K_S", "Q3_K_M", "Q3_K_L",
                       "Q4_0", "Q4_K_S", "Q4_K_M", "Q5_0", "Q5_K_S", "Q5_K_M", "Q6_K", "Q8_0",
-                      "BF16", "F16", "FP8_E4M3FN", "FP8_E4M3FN (All)", "FP8_E5M2", "FP8_E5M2 (All)"]
+                      "BF16", "F16", "FP8_E4M3FN", "FP8_E4M3FN (All)", "FP8_E5M2", "FP8_E5M2 (All)",
+                      "MODEL", "VAE", "CLIP"]
+        
+        components = ["MODEL", "VAE", "CLIP"]
+        fp8_variants = ["FP8_E5M2", "FP8_E5M2 (All)", "FP8_E4M3FN", "FP8_E4M3FN (All)"]
         
         active_quants = list(set(gen + up_only))
         active_quants.sort(key=lambda x: SORT_ORDER.index(x) if x in SORT_ORDER else 999)
 
-        fp8_variants = ["FP8_E5M2", "FP8_E5M2 (All)", "FP8_E4M3FN", "FP8_E4M3FN (All)"]
-        gguf_gen_needed = [q for q in gen if q not in fp8_variants]
-        if gguf_gen_needed: steps.append("GGUF Prep")
+        steps = []
+        # 1. Extraction Step
+        if any(x in gen for x in components):
+            steps.append("Extracting")
+
+        # 2. GGUF Prep Step (Only if generating actual GGUF quants)
+        gguf_gen_needed = [q for q in gen if q not in fp8_variants and q not in components]
+        if gguf_gen_needed: 
+            steps.append("GGUF Prep")
         
-        for q in active_quants: steps.append(q)
+        # 3. Add all individual quants/components to steps
+        for q in active_quants: 
+            steps.append(q)
+        
+        # 4. Final steps
         if self.do_upload.get(): steps.append("Upload")
         steps.append("Cleanup")
 
@@ -826,7 +889,9 @@ class ConverterApp:
     def run_main_logic(self, gen_list, up_list):
         # Identify the current log file from the logger
         import os
-        os.environ["TQDM_MININTERVAL"] = "2.0" # Only update progress every 2 seconds
+        #os.environ["TQDM_MININTERVAL"] = "2.0" # Only update progress every 2 seconds
+        components = ["MODEL", "VAE", "CLIP"]
+        fp8_variants = ["FP8_E5M2", "FP8_E5M2 (All)", "FP8_E4M3FN", "FP8_E4M3FN (All)"]
         log_file_handle = None
         for handler in logging.getLogger().handlers:
             if isinstance(handler, logging.FileHandler):
@@ -838,7 +903,6 @@ class ConverterApp:
         sys.stderr = DualOutput(old_stderr, self.msg_queue, log_file_handle)
         
         try:
-            # ... existing code (strategy, keep_list, etc.) ...
             strategy = self.cleanup_mode.get()
             keep_list = [q for q, v in self.quant_vars_keep.items() if v.get()]
             keep_dequant = self.keep_dequant_var.get()
@@ -887,6 +951,26 @@ class ConverterApp:
                 
                 generated_files = []
 
+                # --- Extraction Logic ---
+                do_ext_m = self.quant_vars_gen.get("MODEL", tk.BooleanVar()).get()
+                do_ext_v = self.quant_vars_gen.get("VAE", tk.BooleanVar()).get()
+                do_ext_c = self.quant_vars_gen.get("CLIP", tk.BooleanVar()).get()
+
+                if (do_ext_m or do_ext_c or do_ext_v) and f.lower().endswith(".safetensors"):
+                    self.msg_queue.put(("UPDATE_GRID", model_base, "Extracting", "RUNNING"))
+                    ext_cmd = [sys.executable, "extract_components.py", "--src", f, "--dst_dir", out_dir]
+                    if do_ext_m: ext_cmd.append("--model")
+                    if do_ext_c: ext_cmd.append("--clip")
+                    if do_ext_v: ext_cmd.append("--vae")
+                    
+                    if self.run_cmd(ext_cmd):
+                        self.msg_queue.put(("UPDATE_GRID", model_base, "Extracting", "DONE"))
+                        # Mark them as generated so they are eligible for U and K logic
+                        extracted = glob.glob(os.path.join(out_dir, f"{name}_*.safetensors"))
+                        generated_files.extend(extracted)
+                    else:
+                        self.msg_queue.put(("UPDATE_GRID", model_base, "Extracting", "ERROR"))
+
                 # --- FP8 Logic ---
                 fp8_targets = ["FP8_E5M2", "FP8_E5M2 (All)", "FP8_E4M3FN", "FP8_E4M3FN (All)"]
                 for q in fp8_targets:
@@ -918,9 +1002,9 @@ class ConverterApp:
                 # --- GGUF Logic ---
                 raw_combined = gen_list + up_list
                 unique_tasks = list(set(raw_combined))
-                all_gguf_active = [q for q in unique_tasks if "FP8" not in q]
+                all_gguf_active = [q for q in unique_tasks if "FP8" not in q and q not in components]
                 if all_gguf_active:
-                    gguf_gen_needed = [q for q in gen_list if "FP8" not in q]
+                    gguf_gen_needed = [q for q in gen_list if "FP8" not in q and q not in components]
                     gguf_src = None
                     if gguf_gen_needed:
                         if self.stop_requested: break
@@ -999,6 +1083,13 @@ class ConverterApp:
             self.btn_run.config(state="normal")
 
     def _check_file_match_quant(self, fname, q):
+        if q == "MODEL": return fname.endswith("_model.safetensors")
+        if q == "VAE":   return fname.endswith("_vae.safetensors")
+        if q == "CLIP":  
+            suffixes = ["_clip.safetensors", "_clip_l.safetensors", "_clip_g.safetensors", 
+                        "_clip_h.safetensors", "_t5xxl.safetensors", "_t5base.safetensors", 
+                        "_llama.safetensors", "_gemma.safetensors"]
+            return any(fname.endswith(s) for s in suffixes)
         if "FP8" in q:
             base_q = q.split(" ")[0] 
             is_all_q = "(All)" in q
@@ -1042,35 +1133,49 @@ class ConverterApp:
                 
                 # 1. Identify which files belong to which repo
                 files_to_upload = []
-                for f in files:
+                for f in files: # The loop variable is 'f'
                     fname = os.path.basename(f)
-                    # Skip temporary/utility files
                     if any(x in fname for x in ["-CONVERT", "-UnFixed", "-dequant"]): continue
                     
-                    # Check if this file's quantization was selected for upload
-                    for q in up_list:
+                    for q in up_list: 
                         if self._check_file_match_quant(fname, q):
-                            files_to_upload.append(f)
+                            files_to_upload.append(f) # <--- MUST be 'f', not 'f_path'
                             break
                 
-                files_to_upload = list(set(files_to_upload))
-                fp8s = [f for f in files_to_upload if "FP8" in os.path.basename(f)]
-                ggufs = [f for f in files_to_upload if "FP8" not in os.path.basename(f)]
+                files_to_upload = list(set(files_to_upload)) 
+
+                files_for_fp8_repo = []
+                files_for_gguf_repo = []
+
+                # Define the suffixes that identify extracted parts
+                extraction_suffixes = ["_model", "_vae", "_clip_l", "_clip_g", "_clip_h", "_t5xxl", "_t5base", "_llama", "_gemma", "_clip"]
+
+                for f_path in files_to_upload:
+                    fname = os.path.basename(f_path).lower()
+                    is_component = any(suffix in fname for suffix in extraction_suffixes)
+                    
+                    if fname.endswith(".gguf"):
+                        files_for_gguf_repo.append(f_path)
+                    elif fname.endswith(".safetensors"):
+                        files_for_fp8_repo.append(f_path)
+                        # If it's a VAE/CLIP/Model part, put it in GGUF repo too
+                        if is_component:
+                            files_for_gguf_repo.append(f_path)
 
                 try:
                     success = True
                     python_exe = self.python_path_var.get()
                     token = self.hf_token.get()
 
-                    # 2. Launch Uploader as a SEPARATE PROCESS (Fixes the hanging)
-                    if fp8s and r_fp8:
-                        logging.info(f"Launching FP8 Upload for {len(fp8s)} files...")
-                        cmd = [python_exe, "upload_to_hf.py", "--token", token, "--repo", r_fp8, "--dest", d_fp8, "--yes", "--path"] + fp8s
+                    # 2. Launch Uploader processes
+                    if files_for_fp8_repo and r_fp8:
+                        logging.info(f"Launching Safetensors/FP8 Upload for {len(files_for_fp8_repo)} files...")
+                        cmd = [python_exe, "upload_to_hf.py", "--token", token, "--repo", r_fp8, "--dest", d_fp8, "--yes", "--path"] + files_for_fp8_repo
                         if not self.run_cmd(cmd): success = False
                     
-                    if ggufs and r_gguf:
-                        logging.info(f"Launching GGUF Upload for {len(ggufs)} files...")
-                        cmd = [python_exe, "upload_to_hf.py", "--token", token, "--repo", r_gguf, "--dest", d_gguf, "--yes", "--path"] + ggufs
+                    if files_for_gguf_repo and r_gguf:
+                        logging.info(f"Launching GGUF Upload for {len(files_for_gguf_repo)} files...")
+                        cmd = [python_exe, "upload_to_hf.py", "--token", token, "--repo", r_gguf, "--dest", d_gguf, "--yes", "--path"] + files_for_gguf_repo
                         if not self.run_cmd(cmd): success = False
 
                     if success:
@@ -1099,51 +1204,100 @@ class ConverterApp:
         self.msg_queue.put(("UPDATE_GRID", disp, "Cleanup", "DONE"))
 
     def run_cmd(self, cmd):
+        import os
         logging.info(f"CMD: {' '.join(cmd)}")
+        
+        log_file = None
+        try: log_file = open(self.current_log_path, "a", encoding="utf-8", errors="replace")
+        except: pass
+
         env = os.environ.copy()
         env["PYTHONUNBUFFERED"] = "1"
-        env["COLUMNS"] = "120"
-        env["TERM"] = "xterm"
-        env["TQDM_MININTERVAL"] = "2.0" # Reduce progress bar spam
+        env["TERM"] = "xterm-256color"
+        #env["COLUMNS"] = "130" # Set a fixed width
+        env["TQDM_TTY"] = "1"  # CRITICAL: Forces tqdm to use \r updates
+        env["PYTHONIOENCODING"] = "utf-8"
 
         try:
-            # Using a large bufsize and merging stderr into stdout
             self.current_process = subprocess.Popen(
                 cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, 
-                text=True, bufsize=1, encoding='utf-8', errors='replace', env=env
+                bufsize=0, env=env # Binary mode
             )
 
-            # Read line by line is safer for progress bars
-            for line in self.current_process.stdout:
-                if self.stop_requested:
-                    self.current_process.kill()
-                    return False
-                sys.stdout.write(line)
-            
+            while True:
+                # Read in small chunks to keep the UI snappy
+                chunk = self.current_process.stdout.read(128)
+                if not chunk and self.current_process.poll() is not None:
+                    break
+                
+                if chunk:
+                    # Mirror to CMD
+                    os.write(1, chunk)
+                    
+                    text_data = chunk.decode('utf-8', errors='replace')
+                    
+                    # Write to File
+                    if log_file:
+                        log_file.write(text_data)
+                        log_file.flush()
+                    
+                    # Send to GUI
+                    self.msg_queue.put(("RAW", text_data))
+
             return (self.current_process.wait() == 0)
         except Exception as e:
             logging.error(f"Execution error: {e}")
             return False
+        finally:
+            if log_file: log_file.close()
 
     def save_settings(self, f):
+        # Prepare custom file data for JSON (convert StringVars to strings)
+        serializable_custom_data = {}
+        for path, data in self.custom_file_data.items():
+            serializable_custom_data[path] = {
+                "out": data["out"].get(),
+                "gguf_r": data["gguf_r"].get(),
+                "gguf_d": data["gguf_d"].get(),
+                "fp8_r": data["fp8_r"].get(),
+                "fp8_d": data["fp8_d"].get()
+            }
+
         d = {
-            "python": self.python_path_var.get(), "out": self.out_dir_var.get(),
-            "out_mode": self.out_mode_var.get(), "up_mode": self.upload_mode_var.get(),
-            "token": self.hf_token.get(), "r_gguf": self.hf_repo_gguf.get(), "d_gguf": self.hf_dest_gguf.get(),
-            "r_fp8": self.hf_repo_fp8.get(), "d_fp8": self.hf_dest_fp8.get(), "clean": self.cleanup_mode.get(),
-            "shut": self.shutdown_var.get(), "q_gen": [k for k,v in self.quant_vars_gen.items() if v.get()],
+            "python": self.python_path_var.get(), 
+            "out": self.out_dir_var.get(),
+            "out_mode": self.out_mode_var.get(), 
+            "up_mode": self.upload_mode_var.get(),
+            "do_upload": self.do_upload.get(), # Added
+            "token": self.hf_token.get(), 
+            "r_gguf": self.hf_repo_gguf.get(), 
+            "d_gguf": self.hf_dest_gguf.get(),
+            "r_fp8": self.hf_repo_fp8.get(), 
+            "d_fp8": self.hf_dest_fp8.get(), 
+            "clean": self.cleanup_mode.get(),
+            "shut": self.shutdown_var.get(), 
+            "q_gen": [k for k,v in self.quant_vars_gen.items() if v.get()],
             "q_up": [k for k,v in self.quant_vars_up.items() if v.get()],
             "q_keep": [k for k,v in self.quant_vars_keep.items() if v.get()],
-            "k_dequant": self.keep_dequant_var.get(), "k_convert": self.keep_convert_var.get(),
-            "geometry": self.root.geometry()
+            "k_dequant": self.keep_dequant_var.get(), 
+            "k_convert": self.keep_convert_var.get(),
+            "geometry": self.root.geometry(),
+            "source_files": self.source_files, # Added
+            "custom_file_data": serializable_custom_data # Added
         }
-        try: json.dump(d, open(f, 'w'), indent=4)
-        except: pass
+        try: 
+            with open(f, 'w') as jf:
+                json.dump(d, jf, indent=4)
+        except Exception as e: 
+            print(f"Save settings error: {e}")
 
     def load_settings(self, f, silent=False):
         if not os.path.exists(f): return
         try:
-            d = json.load(open(f))
+            with open(f, 'r') as jf:
+                d = json.load(jf)
+            
+            # 1. Basic Variables
             if "python" in d: self.python_path_var.set(d["python"])
             if "out" in d: self.out_dir_var.set(d["out"])
             if "token" in d: self.hf_token.set(d["token"])
@@ -1153,11 +1307,28 @@ class ConverterApp:
             if "d_fp8" in d: self.hf_dest_fp8.set(d["d_fp8"])
             if "out_mode" in d: self.out_mode_var.set(d["out_mode"])
             if "up_mode" in d: self.upload_mode_var.set(d["up_mode"])
+            if "do_upload" in d: self.do_upload.set(d["do_upload"]) # Added
             if "clean" in d: self.cleanup_mode.set(d["clean"])
             if "shut" in d: self.shutdown_var.set(d["shut"])
             if "k_dequant" in d: self.keep_dequant_var.set(d["k_dequant"])
             if "k_convert" in d: self.keep_convert_var.set(d["k_convert"])
             if "geometry" in d: self.root.geometry(d["geometry"])
+            
+            # 2. Source Files & Custom Data (Crucial for the Routing Tables)
+            if "source_files" in d: 
+                self.source_files = d["source_files"]
+            
+            if "custom_file_data" in d:
+                for path, data in d["custom_file_data"].items():
+                    self.custom_file_data[path] = {
+                        "out": tk.StringVar(value=data.get("out", "")),
+                        "gguf_r": tk.StringVar(value=data.get("gguf_r", "")),
+                        "gguf_d": tk.StringVar(value=data.get("gguf_d", "")),
+                        "fp8_r": tk.StringVar(value=data.get("fp8_r", "")),
+                        "fp8_d": tk.StringVar(value=data.get("fp8_d", ""))
+                    }
+
+            # 3. Quantization Grid
             for v in self.quant_vars_gen.values(): v.set(False)
             for v in self.quant_vars_up.values(): v.set(False)
             for v in self.quant_vars_keep.values(): v.set(False)
@@ -1167,8 +1338,13 @@ class ConverterApp:
                 if q in self.quant_vars_up: self.quant_vars_up[q].set(True)
             for q in d.get("q_keep", []): 
                 if q in self.quant_vars_keep: self.quant_vars_keep[q].set(True)
-            self.refresh_file_list_ui(); self.refresh_upload_ui()
-        except: pass
+            
+            # 4. Refresh UI to reflect loaded state
+            self.refresh_file_list_ui()
+            self.refresh_upload_ui()
+            
+        except Exception as e: 
+            print(f"Load settings error: {e}")
 
 if __name__ == "__main__":
     root = tk.Tk()

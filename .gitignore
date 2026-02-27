@@ -5,8 +5,10 @@
 !/Utils/
 
 # 3. Allow the specific root files you want to keep
+!/.gitignore
 !/README.md
 !/dequantize_fp8v2.py
+!/extract_components.py
 !/gui_run_conversion.py
 !/requirements.txt
 !/start_gui.bat
