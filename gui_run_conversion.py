@@ -279,51 +279,51 @@ except ImportError: TORCH_AVAILABLE = False
 QUANT_GROUPS = [
     ["F16", "BF16"], ["Q2_K"], ["Q3_K_S", "Q3_K_M", "Q3_K_L"],
     ["Q4_0", "Q4_K_S", "Q4_K_M"], ["Q5_0", "Q5_K_S", "Q5_K_M"],
-    ["Q6_K", "Q8_0"], ["FP8_E5M2", "FP8_E5M2 (All)"], ["MODEL", "VAE", "CLIP"],
+    ["Q6_K", "Q8_0"], ["FP8_E5M2", "FP8_E5M2 (All)"], ["FP8_E4M3FN", "FP8_E4M3FN (All)"],
+    ["MODEL", "VAE", "CLIP"],
 ]
 
 if TORCH_AVAILABLE:
     class FP8Quantizer:
         def __init__(self, quant_dtype: str = "float8_e5m2"):
             self.quant_dtype = quant_dtype
-            self.gui_ansi_buffer = ""
-            self.current_theme = THEMES["Default"]
+
         def quantize_weights(self, weight: torch.Tensor) -> torch.Tensor:
             if not weight.is_floating_point(): return weight
             dev = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
-            w = weight.to(dev); mx = torch.max(torch.abs(w))
+            w = weight.to(dev)
+            mx = torch.max(torch.abs(w))
             if mx == 0: return torch.zeros_like(w, dtype=getattr(torch, self.quant_dtype))
             scale = torch.max(mx / 127.0, torch.tensor(1e-12, device=dev, dtype=w.dtype))
             q = torch.round(w / scale * 127.0) / 127.0 * scale
             return q.to(dtype=getattr(torch, self.quant_dtype))
+
         def apply_quantization_to_file(self, src_path, dst_path, unet_only=True, check_stop_func=None):
-            if src_path.endswith(".safetensors"): state_dict = load_file(src_path)
-            else: state_dict = torch.load(src_path, map_location="cpu")
-            
+            state_dict = load_file(src_path) if src_path.endswith(".safetensors") else torch.load(src_path, map_location="cpu")
             quantized_dict = {}
             total = len(state_dict)
             
+            # Key model identifiers for Flux, Wan, SD3, and SDXL
+            model_keys = ["model.diffusion_model", "transformer.single_blocks", "transformer.double_blocks", "model.transformers"]
+
             for i, (name, param) in enumerate(state_dict.items()):
                 if check_stop_func and check_stop_func(): return False
                 
-                # Progress update (Every 5 tensors)
-                if i % 5 == 0 or i == total - 1:
+                if i % 10 == 0 or i == total - 1:
                     percent = (i + 1) / total * 100
-                    # Use \r to overwrite the line
                     sys.stdout.write(f"\r[FP8 Progress] {percent:3.1f}% | Tensor {i+1}/{total}")
                     sys.stdout.flush()
 
-                if unet_only and "model.diffusion_model" not in name:
+                is_model_weight = any(k in name for k in model_keys)
+
+                if unet_only and not is_model_weight:
                     quantized_dict[name] = param
-                    continue 
-                
-                if isinstance(param, torch.Tensor) and param.is_floating_point():
+                elif isinstance(param, torch.Tensor) and param.is_floating_point():
                     quantized_dict[name] = self.quantize_weights(param)
                 else:
                     quantized_dict[name] = param
             
-            print("") # Move to next line after progress is done
-            if not quantized_dict: return False
+            print("") 
             save_file(quantized_dict, dst_path)
             return True
 else:
@@ -1139,32 +1139,30 @@ class ConverterApp:
                         self.msg_queue.put(("UPDATE_GRID", model_base, "Extracting", "ERROR"))
 
                 # --- FP8 Logic ---
-                fp8_targets = ["FP8_E5M2", "FP8_E5M2 (All)", "FP8_E4M3FN", "FP8_E4M3FN (All)"]
-                for q in fp8_targets:
-                    if q in gen_list or q in up_list:
+                fp8_variants = ["FP8_E5M2", "FP8_E5M2 (All)", "FP8_E4M3FN", "FP8_E4M3FN (All)"]
+                for q in fp8_variants:
+                    if (q in gen_list or q in up_list) and f.lower().endswith(".safetensors"):
                         if self.stop_requested: break
                         self.msg_queue.put(("UPDATE_GRID", model_base, q, "RUNNING"))
+                        
                         suffix = "_All" if "All" in q else ""
-                        base_q_name = q.split(" ")[0]
-                        expected_path = os.path.join(out_dir, f"{name}-{base_q_name}{suffix}.safetensors")
+                        dtype_str = "float8_e5m2" if "E5M2" in q else "float8_e4m3fn"
+                        expected_path = os.path.join(out_dir, f"{name}-{q.split()[0]}{suffix}.safetensors")
+                        
                         if q in gen_list:
                             try:
-                                if TORCH_AVAILABLE:
-                                    dtype_str = "float8_e5m2" if "E5M2" in q else "float8_e4m3fn"
-                                    qzer = FP8Quantizer(dtype_str)
-                                    ok = qzer.apply_quantization_to_file(f, expected_path, unet_only=("All" not in q), check_stop_func=lambda: self.stop_requested)
-                                    if ok: 
-                                        generated_files.append(expected_path)
-                                        self.msg_queue.put(("UPDATE_GRID", model_base, q, "DONE"))
-                                    else: self.msg_queue.put(("UPDATE_GRID", model_base, q, "CANCEL"))
-                                else: self.msg_queue.put(("UPDATE_GRID", model_base, q, "ERROR"))
+                                qzer = FP8Quantizer(dtype_str)
+                                ok = qzer.apply_quantization_to_file(f, expected_path, unet_only=("All" not in q), check_stop_func=lambda: self.stop_requested)
+                                if ok: 
+                                    generated_files.append(expected_path)
+                                    self.msg_queue.put(("UPDATE_GRID", model_base, q, "DONE"))
+                                else: self.msg_queue.put(("UPDATE_GRID", model_base, q, "CANCEL"))
                             except Exception as e:
+                                logging.error(f"FP8 Error: {e}")
                                 self.msg_queue.put(("UPDATE_GRID", model_base, q, "ERROR"))
-                        elif q in up_list:
-                            if os.path.exists(expected_path):
-                                generated_files.append(expected_path)
-                                self.msg_queue.put(("UPDATE_GRID", model_base, q, "DONE"))
-                            else: self.msg_queue.put(("UPDATE_GRID", model_base, q, "SKIP"))
+                        elif os.path.exists(expected_path):
+                            generated_files.append(expected_path)
+                            self.msg_queue.put(("UPDATE_GRID", model_base, q, "DONE"))
 
                 # --- GGUF Logic ---
                 raw_combined = gen_list + up_list
