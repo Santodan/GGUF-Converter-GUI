@@ -264,11 +264,14 @@ class DependencyManager:
 UPLOADER_AVAILABLE = False; uploader = None
 def try_load_uploader():
     global uploader, UPLOADER_AVAILABLE
+    # Look for the file in the current directory
     if os.path.exists("upload_to_hf.py"):
         try:
+            # CHANGE: Import directly from the root, not from 'Utils'
             import upload_to_hf; import importlib; importlib.reload(upload_to_hf)
             uploader, UPLOADER_AVAILABLE = upload_to_hf, True; return True
-        except: pass
+        except Exception as e: 
+            logging.error(f"Failed to load uploader: {e}")
     return False
 try_load_uploader()
 
@@ -318,14 +321,24 @@ if TORCH_AVAILABLE:
 
                 is_model_weight = any(k in name for k in model_keys)
 
+                # --- NEW LOGIC START ---
                 if unet_only and not is_model_weight:
-                    quantized_dict[name] = param
-                elif isinstance(param, torch.Tensor) and param.is_floating_point():
+                    # If this is the non-"All" version, skip CLIP/VAE tensors entirely
+                    continue 
+                
+                # If it's a model weight (or we are in "All" mode), quantize it
+                if isinstance(param, torch.Tensor) and param.is_floating_point():
                     quantized_dict[name] = self.quantize_weights(param)
                 else:
+                    # Keep non-float tensors (like integer IDs) as they are
                     quantized_dict[name] = param
+                # --- NEW LOGIC END ---
             
             print("") 
+            if not quantized_dict:
+                logging.error("No tensors were processed. Check if the model keys match the file.")
+                return False
+                
             save_file(quantized_dict, dst_path)
             return True
 else:
@@ -1280,6 +1293,14 @@ class ConverterApp:
         name, files, disp, src = item['name'], item['files'], item['model_display'], item['src_path']
         r_gguf, d_gguf, r_fp8, d_fp8 = self.hf_repo_gguf.get(), self.hf_dest_gguf.get(), self.hf_repo_fp8.get(), self.hf_dest_fp8.get()
         
+        # --- NEW LOGIC: Calculate out_dir to find existing files ---
+        if out_mode == "custom":
+            dat = self.custom_file_data.get(src, {})
+            out_dir = dat["out"].get() if "out" in dat else os.path.dirname(src)
+        else:
+            base = self.out_dir_var.get() if self.out_dir_var.get() else os.path.dirname(src)
+            out_dir = os.path.join(base, name) if out_mode == "folder" else base
+
         if up_mode == "custom":
             dat = self.custom_file_data.get(src, {})
             if "gguf_r" in dat and dat["gguf_r"].get(): r_gguf = dat["gguf_r"].get()
@@ -1298,15 +1319,28 @@ class ConverterApp:
             else:
                 self.msg_queue.put(("UPDATE_GRID", disp, "Upload", "RUNNING"))
                 
-                # 1. Identify which files belong to which repo
+                import gc
+                if TORCH_AVAILABLE:
+                    torch.cuda.empty_cache()
+                gc.collect() 
+                
+                # --- MODIFIED: Scan directory for ALL files matching the 'U' list ---
                 files_to_upload = []
-                for f in files:
-                    fname = os.path.basename(f)
+                # Look at files just made + everything in the output folder
+                candidates = list(set(files + glob.glob(os.path.join(out_dir, "*"))))
+                
+                for f_path in candidates:
+                    f_path = os.path.normpath(f_path)
+                    fname = os.path.basename(f_path)
+                    
+                    # --- ADD THIS LINE: Only process files that belong to THIS model ---
+                    if not fname.lower().startswith(name.lower()): continue
+                    
                     if any(x in fname for x in ["-CONVERT", "-UnFixed", "-dequant"]): continue
                     
                     for q in up_list: 
                         if self._check_file_match_quant(fname, q):
-                            files_to_upload.append(f) # FIXED
+                            files_to_upload.append(f_path)
                             break
                 
                 files_to_upload = list(set(files_to_upload)) 
@@ -1381,7 +1415,7 @@ class ConverterApp:
         env = os.environ.copy()
         env["PYTHONUNBUFFERED"] = "1"
         env["TERM"] = "xterm-256color"
-        env["COLUMNS"] = "130" # Set a fixed width
+        #env["COLUMNS"] = "130" # Set a fixed width
         env["TQDM_TTY"] = "1"  # CRITICAL: Forces tqdm to use \r updates
         env["PYTHONIOENCODING"] = "utf-8"
 
