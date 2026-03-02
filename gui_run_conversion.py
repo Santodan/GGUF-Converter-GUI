@@ -1391,7 +1391,7 @@ class ConverterApp:
                 # Update the specific quantization cell to 'Running'
                 self.msg_queue.put(("UPDATE_GRID", disp, q_name, "RUNNING"))
                 
-                cmd = [python_exe, "upload_to_hf.py", "--token", token, "--repo", repo, "--dest", folder, "--yes", "--path", f_path]
+                cmd = [python_exe, "upload_to_hf.py", "--repo", repo, "--dest", folder, "--yes", "--path", f_path]
                 
                 if self.run_cmd(cmd):
                     # Mark the specific cell as UPLOADED (Dark Green)
@@ -1428,7 +1428,19 @@ class ConverterApp:
 
     def run_cmd(self, cmd):
         import os
-        logging.info(f"CMD: {' '.join(cmd)}")
+        log_cmd = []
+        skip_next = False
+        for part in cmd:
+            if skip_next:
+                log_cmd.append("********")
+                skip_next = False
+            elif part == "--token":
+                log_cmd.append(part)
+                skip_next = True
+            else:
+                log_cmd.append(part)
+        
+        logging.info(f"CMD: {' '.join(log_cmd)}")
         
         log_file = None
         try: log_file = open(self.current_log_path, "a", encoding="utf-8", errors="replace")
@@ -1440,6 +1452,7 @@ class ConverterApp:
         env["COLUMNS"] = "200" # Set a fixed width
         env["TQDM_TTY"] = "1"  # CRITICAL: Forces tqdm to use \r updates
         env["PYTHONIOENCODING"] = "utf-8"
+        env["HUGGING_FACE_HUB_TOKEN"] = self.hf_token.get()
 
         try:
             self.current_process = subprocess.Popen(
