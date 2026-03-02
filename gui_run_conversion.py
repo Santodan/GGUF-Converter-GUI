@@ -79,15 +79,13 @@ def ensure_dependencies():
     """Checks for required packages and installs them if missing."""
     dependencies = {
         "safetensors": "safetensors",
-        "huggingface_hub": "huggingface_hub",
-        "hf_transfer": "hf_transfer",
+        "huggingface_hub[cli]": "huggingface_hub",
         "tqdm": "tqdm",
         "sentencepiece": "sentencepiece",
         "numpy==1.26.4": "numpy",
         "gguf": "gguf",
-        "prompt_toolkit": "prompt_toolkit",
         "requests": "requests",
-        "torch": "torch"
+        "torch": "torch",
     }
     missing_or_wrong = []
     for pkg_pip, mod_name in dependencies.items():
@@ -139,8 +137,22 @@ class DependencyManager:
 
     @staticmethod
     def build_llama_cpp(target_dir, logger_callback):
+        import shutil
+        missing_tools = []
+        if shutil.which("git") is None: missing_tools.append("git")
+        if shutil.which("cmake") is None: missing_tools.append("cmake")
+        
+        if missing_tools:
+            error_msg = f"Missing system tools: {', '.join(missing_tools)}\n\nPlease run: sudo apt install {' '.join(missing_tools)} build-essential"
+            logger_callback(f"[ERROR] {error_msg}")
+            messagebox.showerror("Missing Build Tools", error_msg)
+            return
+
         original_cwd = os.getcwd()
-        temp_build_dir = os.path.join(target_dir, "llama_cpp_build_temp")
+        if platform.system() == "Linux":
+            temp_build_dir = os.path.join(os.path.expanduser("~"), "llama_cpp_build_temp")
+        else:
+            temp_build_dir = os.path.join(target_dir, "llama_cpp_build_temp")
         
         try:
             if os.path.exists(temp_build_dir):
@@ -239,8 +251,15 @@ class DependencyManager:
             if built_binary:
                 dest_name = "llama-quantize.exe" if platform.system() == "Windows" else "llama-quantize"
                 dest_path = os.path.join(target_dir, dest_name)
+                
+                # Copy from Linux Home back to the GUI folder (E: drive)
                 shutil.copy2(built_binary, dest_path)
-                logger_callback(f"[BUILD] Copied binary → {dest_path}")
+                
+                # If Linux, make it executable
+                if platform.system() == "Linux":
+                    os.chmod(dest_path, 0o755)
+
+                logger_callback(f"[BUILD] Successfully moved binary → {dest_path}")
                 
                 # Copy nearby shared libs (platform-specific patterns)
                 bin_dir = os.path.dirname(built_binary)
@@ -439,6 +458,9 @@ class ProgressPopup(tk.Toplevel):
             lbl.config(bg="#ffff99" if not is_dark else "#5c5c00", text="Running", fg="black" if not is_dark else "white")
         elif status == "DONE":
             lbl.config(bg="#99ff99" if not is_dark else "#004400", text="Done", fg="black" if not is_dark else "white")
+        elif status == "UPLOADED":
+            # Dark Green background with white text for cloud success
+            lbl.config(bg="#006400", text="Uploaded", fg="white")
         elif status == "ERROR":
             lbl.config(bg="#ff9999" if not is_dark else "#440000", text="Error", fg="black" if not is_dark else "white")
         elif status == "SKIP":
@@ -1031,10 +1053,12 @@ class ConverterApp:
         self.stop_requested = False
         
         # Define Order and Groups
-        SORT_ORDER = ["Q2_K", "Q3_K_S", "Q3_K_M", "Q3_K_L",
-                      "Q4_0", "Q4_K_S", "Q4_K_M", "Q5_0", "Q5_K_S", "Q5_K_M", "Q6_K", "Q8_0",
-                      "BF16", "F16", "FP8_E4M3FN", "FP8_E4M3FN (All)", "FP8_E5M2", "FP8_E5M2 (All)",
-                      "MODEL", "VAE", "CLIP"]
+        SORT_ORDER = [
+            "MODEL", "VAE", "CLIP", 
+            "FP8_E4M3FN", "FP8_E4M3FN (All)", "FP8_E5M2", "FP8_E5M2 (All)",
+            "Q2_K", "Q3_K_S", "Q3_K_M", "Q3_K_L", "Q4_0", "Q4_K_S", "Q4_K_M", 
+            "Q5_0", "Q5_K_S", "Q5_K_M", "Q6_K", "Q8_0", "BF16", "F16"
+        ]
         
         components = ["MODEL", "VAE", "CLIP"]
         fp8_variants = ["FP8_E5M2", "FP8_E5M2 (All)", "FP8_E4M3FN", "FP8_E4M3FN (All)"]
@@ -1147,7 +1171,11 @@ class ConverterApp:
                     
                     if self.run_cmd(ext_cmd):
                         self.msg_queue.put(("UPDATE_GRID", model_base, "Extracting", "DONE"))
-                        # Mark them as generated so they are eligible for U and K logic
+                        # Granular updates for components
+                        if do_ext_m: self.msg_queue.put(("UPDATE_GRID", model_base, "MODEL", "DONE"))
+                        if do_ext_v: self.msg_queue.put(("UPDATE_GRID", model_base, "VAE", "DONE"))
+                        if do_ext_c: self.msg_queue.put(("UPDATE_GRID", model_base, "CLIP", "DONE"))
+                        
                         extracted = glob.glob(os.path.join(out_dir, f"{name}_*.safetensors"))
                         generated_files.extend(extracted)
                     else:
@@ -1155,36 +1183,39 @@ class ConverterApp:
 
                 # --- FP8 Logic ---
                 fp8_variants = ["FP8_E5M2", "FP8_E5M2 (All)", "FP8_E4M3FN", "FP8_E4M3FN (All)"]
-                for q in fp8_variants:
-                    if (q in gen_list or q in up_list) and f.lower().endswith(".safetensors"):
-                        if self.stop_requested: break
-                        self.msg_queue.put(("UPDATE_GRID", model_base, q, "RUNNING"))
+                active_fp8 = [v for v in fp8_variants if (v in gen_list or v in up_list)]
+                for q in active_fp8:
+                    if self.stop_requested: break
+                    self.msg_queue.put(("UPDATE_GRID", model_base, q, "RUNNING"))
                         
-                        suffix = "_All" if "All" in q else ""
-                        dtype_str = "float8_e5m2" if "E5M2" in q else "float8_e4m3fn"
-                        expected_path = os.path.join(out_dir, f"{name}-{q.split()[0]}{suffix}.safetensors")
+                    suffix = "_All" if "All" in q else ""
+                    dtype_str = "float8_e5m2" if "E5M2" in q else "float8_e4m3fn"
+                    expected_path = os.path.join(out_dir, f"{name}-{q.split()[0]}{suffix}.safetensors")
                         
-                        if q in gen_list:
-                            try:
-                                qzer = FP8Quantizer(dtype_str)
-                                ok = qzer.apply_quantization_to_file(f, expected_path, unet_only=("All" not in q), check_stop_func=lambda: self.stop_requested)
-                                if ok: 
-                                    generated_files.append(expected_path)
-                                    self.msg_queue.put(("UPDATE_GRID", model_base, q, "DONE"))
-                                else: self.msg_queue.put(("UPDATE_GRID", model_base, q, "CANCEL"))
-                            except Exception as e:
-                                logging.error(f"FP8 Error: {e}")
-                                self.msg_queue.put(("UPDATE_GRID", model_base, q, "ERROR"))
-                        elif os.path.exists(expected_path):
-                            generated_files.append(expected_path)
-                            self.msg_queue.put(("UPDATE_GRID", model_base, q, "DONE"))
+                    if q in gen_list:
+                        try:
+                            qzer = FP8Quantizer(dtype_str)
+                            ok = qzer.apply_quantization_to_file(f, expected_path, unet_only=("All" not in q), check_stop_func=lambda: self.stop_requested)
+                            if ok: 
+                                generated_files.append(expected_path)
+                                self.msg_queue.put(("UPDATE_GRID", model_base, q, "DONE"))
+                            else: self.msg_queue.put(("UPDATE_GRID", model_base, q, "CANCEL"))
+                        except Exception as e:
+                            logging.error(f"FP8 Error: {e}")
+                            self.msg_queue.put(("UPDATE_GRID", model_base, q, "ERROR"))
+                    elif os.path.exists(expected_path):
+                        generated_files.append(expected_path)
+                        self.msg_queue.put(("UPDATE_GRID", model_base, q, "DONE"))
 
                 # --- GGUF Logic ---
                 raw_combined = gen_list + up_list
                 unique_tasks = list(set(raw_combined))
-                all_gguf_active = [q for q in unique_tasks if "FP8" not in q and q not in components]
+                gguf_order = ["Q2_K", "Q3_K_S", "Q3_K_M", "Q3_K_L", "Q4_0", "Q4_K_S", "Q4_K_M", 
+                              "Q5_0", "Q5_K_S", "Q5_K_M", "Q6_K", "Q8_0", "BF16", "F16"]
+                raw_combined = gen_list + up_list
+                all_gguf_active = [q for q in gguf_order if q in raw_combined]
                 if all_gguf_active:
-                    gguf_gen_needed = [q for q in gen_list if "FP8" not in q and q not in components]
+                    gguf_gen_needed = [q for q in all_gguf_active if q in gen_list]
                     gguf_src = None
                     if gguf_gen_needed:
                         if self.stop_requested: break
@@ -1281,19 +1312,17 @@ class ConverterApp:
     def handle_upload_cleanup(self, item, keep_list, up_list, up_mode, out_mode, keep_dequant, keep_convert):
         if self.stop_requested: return
         
-        # Identify the current log file handle
         log_file_handle = None
         for handler in logging.getLogger().handlers:
             if isinstance(handler, logging.FileHandler):
                 log_file_handle = handler.stream
 
-        if not UPLOADER_AVAILABLE:
-            try_load_uploader()
+        if not UPLOADER_AVAILABLE: try_load_uploader()
 
         name, files, disp, src = item['name'], item['files'], item['model_display'], item['src_path']
         r_gguf, d_gguf, r_fp8, d_fp8 = self.hf_repo_gguf.get(), self.hf_dest_gguf.get(), self.hf_repo_fp8.get(), self.hf_dest_fp8.get()
         
-        # --- NEW LOGIC: Calculate out_dir to find existing files ---
+        # Calculate out_dir to find existing files
         if out_mode == "custom":
             dat = self.custom_file_data.get(src, {})
             out_dir = dat["out"].get() if "out" in dat else os.path.dirname(src)
@@ -1312,94 +1341,87 @@ class ConverterApp:
             d_gguf = f"{d_gguf}/{name}" if d_gguf else name
             d_fp8 = f"{d_fp8}/{name}" if d_fp8 else name
 
-        if self.do_upload.get():
-            if not UPLOADER_AVAILABLE:
-                logging.error("Upload requested but upload_to_hf.py is missing.")
-                self.msg_queue.put(("UPDATE_GRID", disp, "Upload", "ERROR"))
+        if self.do_upload.get() and UPLOADER_AVAILABLE:
+            self.msg_queue.put(("UPDATE_GRID", disp, "Upload", "RUNNING"))
+            import gc
+            if TORCH_AVAILABLE: torch.cuda.empty_cache()
+            gc.collect() 
+
+            # Discover files that belong to THIS model specifically
+            candidates = list(set(files + glob.glob(os.path.join(out_dir, f"{name}*"))))
+            
+            # Create a list of specific "Upload Tasks"
+            # Format: (local_file_path, repo, remote_folder, grid_column_name)
+            upload_tasks = []
+            for f_path in candidates:
+                f_path = os.path.normpath(f_path)
+                fname = os.path.basename(f_path)
+                if any(x in fname for x in ["-CONVERT", "-UnFixed", "-dequant"]): continue
+                if not fname.lower().startswith(name.lower()): continue
+                
+                for q in up_list: 
+                    if self._check_file_match_quant(fname, q):
+                        if fname.lower().endswith(".gguf"):
+                            if r_gguf: upload_tasks.append((f_path, r_gguf, d_gguf, q))
+                        else: # Safetensors
+                            if r_fp8: upload_tasks.append((f_path, r_fp8, d_fp8, q))
+                            # Extra: Components (VAE/CLIP) also get sent to GGUF repo if it exists
+                            if r_gguf and any(s in fname.lower() for s in ["_model", "_vae", "_clip", "_t5", "_llama", "_gemma"]):
+                                upload_tasks.append((f_path, r_gguf, d_gguf, q))
+                        break
+
+            # Execute Granular Uploads
+            success = True
+            python_exe = self.python_path_var.get()
+            token = self.hf_token.get()
+
+            UPLOAD_ORDER = [
+                "MODEL", "VAE", "CLIP", 
+                "FP8_E4M3FN", "FP8_E4M3FN (All)", "FP8_E5M2", "FP8_E5M2 (All)",
+                "Q2_K", "Q3_K_S", "Q3_K_M", "Q3_K_L", "Q4_0", "Q4_K_S", "Q4_K_M", 
+                "Q5_0", "Q5_K_S", "Q5_K_M", "Q6_K", "Q8_0", "BF16", "F16"
+            ]
+
+            # Sort the tasks based on the UPLOAD_ORDER index
+            upload_tasks.sort(key=lambda x: UPLOAD_ORDER.index(x[3]) if x[3] in UPLOAD_ORDER else 999)
+
+            for f_path, repo, folder, q_name in upload_tasks:
+                if self.stop_requested: break
+                
+                # Update the specific quantization cell to 'Running'
+                self.msg_queue.put(("UPDATE_GRID", disp, q_name, "RUNNING"))
+                
+                cmd = [python_exe, "upload_to_hf.py", "--token", token, "--repo", repo, "--dest", folder, "--yes", "--path", f_path]
+                
+                if self.run_cmd(cmd):
+                    # Mark the specific cell as UPLOADED (Dark Green)
+                    self.msg_queue.put(("UPDATE_GRID", disp, q_name, "UPLOADED"))
+                else:
+                    self.msg_queue.put(("UPDATE_GRID", disp, q_name, "ERROR"))
+                    success = False
+
+            if self.stop_requested:
+                self.msg_queue.put(("UPDATE_GRID", disp, "Upload", "CANCEL"))
+            elif success:
+                self.msg_queue.put(("UPDATE_GRID", disp, "Upload", "DONE"))
             else:
-                self.msg_queue.put(("UPDATE_GRID", disp, "Upload", "RUNNING"))
-                
-                import gc
-                if TORCH_AVAILABLE:
-                    torch.cuda.empty_cache()
-                gc.collect() 
-                
-                # --- MODIFIED: Scan directory for ALL files matching the 'U' list ---
-                files_to_upload = []
-                # Look at files just made + everything in the output folder
-                candidates = list(set(files + glob.glob(os.path.join(out_dir, "*"))))
-                
-                for f_path in candidates:
-                    f_path = os.path.normpath(f_path)
-                    fname = os.path.basename(f_path)
-                    
-                    # --- ADD THIS LINE: Only process files that belong to THIS model ---
-                    if not fname.lower().startswith(name.lower()): continue
-                    
-                    if any(x in fname for x in ["-CONVERT", "-UnFixed", "-dequant"]): continue
-                    
-                    for q in up_list: 
-                        if self._check_file_match_quant(fname, q):
-                            files_to_upload.append(f_path)
-                            break
-                
-                files_to_upload = list(set(files_to_upload)) 
-
-                files_for_fp8_repo = []
-                files_for_gguf_repo = []
-
-                # Define the suffixes that identify extracted parts
-                extraction_suffixes = ["_model", "_vae", "_clip_l", "_clip_g", "_clip_h", "_t5xxl", "_t5base", "_llama", "_gemma", "_clip"]
-
-                for f_path in files_to_upload:
-                    fname = os.path.basename(f_path).lower()
-                    is_component = any(suffix in fname for suffix in extraction_suffixes)
-                    
-                    if fname.endswith(".gguf"):
-                        files_for_gguf_repo.append(f_path)
-                    elif fname.endswith(".safetensors"):
-                        files_for_fp8_repo.append(f_path)
-                        # If it's a VAE/CLIP/Model part, put it in GGUF repo too
-                        if is_component:
-                            files_for_gguf_repo.append(f_path)
-
-                try:
-                    success = True
-                    python_exe = self.python_path_var.get()
-                    token = self.hf_token.get()
-
-                    # 2. Launch Uploader processes
-                    if files_for_fp8_repo and r_fp8:
-                        logging.info(f"Launching Safetensors/FP8 Upload for {len(files_for_fp8_repo)} files...")
-                        cmd = [python_exe, "upload_to_hf.py", "--token", token, "--repo", r_fp8, "--dest", d_fp8, "--yes", "--path"] + files_for_fp8_repo
-                        if not self.run_cmd(cmd): success = False
-                    
-                    if files_for_gguf_repo and r_gguf:
-                        logging.info(f"Launching GGUF Upload for {len(files_for_gguf_repo)} files...")
-                        cmd = [python_exe, "upload_to_hf.py", "--token", token, "--repo", r_gguf, "--dest", d_gguf, "--yes", "--path"] + files_for_gguf_repo
-                        if not self.run_cmd(cmd): success = False
-
-                    if success:
-                        self.msg_queue.put(("UPDATE_GRID", disp, "Upload", "DONE"))
-                    else:
-                        self.msg_queue.put(("UPDATE_GRID", disp, "Upload", "ERROR"))
-                except Exception as e:
-                    logging.error(f"Upload Process Error: {e}")
-                    self.msg_queue.put(("UPDATE_GRID", disp, "Upload", "ERROR"))
+                self.msg_queue.put(("UPDATE_GRID", disp, "Upload", "ERROR"))
         else:
             self.msg_queue.put(("UPDATE_GRID", disp, "Upload", "SKIP"))
 
+        # Cleanup
+        if self.stop_requested: return
         self.msg_queue.put(("UPDATE_GRID", disp, "Cleanup", "RUNNING"))
+        keep_list = [q for q, v in self.quant_vars_keep.items() if v.get()]
         for p in files:
             if not os.path.exists(p): continue
             fname = os.path.basename(p)
             should_keep = False
             for q in keep_list:
-                if self._check_file_match_quant(fname, q):
-                    should_keep = True; break
+                if self._check_file_match_quant(fname, q): should_keep = True; break
             if keep_dequant and "-dequant.safetensors" in fname: should_keep = True
             if keep_convert and "-CONVERT.gguf" in fname: should_keep = True
-            if not should_keep: 
+            if not should_keep:
                 try: os.remove(p)
                 except: pass
         self.msg_queue.put(("UPDATE_GRID", disp, "Cleanup", "DONE"))
@@ -1415,7 +1437,7 @@ class ConverterApp:
         env = os.environ.copy()
         env["PYTHONUNBUFFERED"] = "1"
         env["TERM"] = "xterm-256color"
-        #env["COLUMNS"] = "130" # Set a fixed width
+        env["COLUMNS"] = "200" # Set a fixed width
         env["TQDM_TTY"] = "1"  # CRITICAL: Forces tqdm to use \r updates
         env["PYTHONIOENCODING"] = "utf-8"
 
@@ -1426,31 +1448,31 @@ class ConverterApp:
             )
 
             while True:
-                # Read in small chunks to keep the UI snappy
+                # CHECK FOR STOP REQUEST INSIDE THE LOOP
+                if self.stop_requested:
+                    self.current_process.terminate() # Try to terminate gracefully
+                    self.current_process.kill()      # Then force kill
+                    break
+
                 chunk = self.current_process.stdout.read(128)
                 if not chunk and self.current_process.poll() is not None:
                     break
                 
                 if chunk:
-                    # Mirror to CMD
                     os.write(1, chunk)
-                    
                     text_data = chunk.decode('utf-8', errors='replace')
-                    
-                    # Write to File
                     if log_file:
                         log_file.write(text_data)
                         log_file.flush()
-                    
-                    # Send to GUI
                     self.msg_queue.put(("RAW", text_data))
 
-            return (self.current_process.wait() == 0)
+            return (self.current_process.wait() == 0 and not self.stop_requested)
         except Exception as e:
             logging.error(f"Execution error: {e}")
             return False
         finally:
             if log_file: log_file.close()
+            self.current_process = None
 
     def save_settings(self, f):
         # Prepare custom file data for JSON (convert StringVars to strings)
