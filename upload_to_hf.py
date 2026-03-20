@@ -7,7 +7,7 @@ from datetime import datetime
 
 # --- ENVIRONMENT OVERRIDES (Matching your successful manual test) ---
 os.environ["HF_XET_HIGH_PERFORMANCE"] = "1"
-os.environ["HF_HUB_DISABLE_XET"] = "0"
+os.environ["HF_HUB_DISABLE_XET"] = "1"
 os.environ["HF_HUB_MAX_CONCURRENCY"] = "4"
 
 def format_duration(seconds):

@@ -526,7 +526,9 @@ class ConverterApp:
         script_dir = os.path.dirname(os.path.abspath(__file__))
         name = "llama-quantize.exe" if platform.system() == "Windows" else "llama-quantize"
         local_path = os.path.join(script_dir, name)
-        return local_path if os.path.exists(local_path) else name
+        if os.path.exists(local_path):
+            return os.path.abspath(local_path)
+        return name
 
     def _setup_logging(self):
         self.logger = logging.getLogger()
