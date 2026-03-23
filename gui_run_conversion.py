@@ -521,6 +521,20 @@ class ConverterApp:
         DependencyManager.check_and_setup(logging.info)
         self.root.after(100, self.process_queue)
         self.load_settings(self.settings_file, silent=True)
+    
+    def create_header(self, parent, text, column, weight=0):
+        # Create a frame for the header to act as a border container
+        header_frame = tk.Frame(parent, bg=self.current_theme["btn_bg"], 
+                                highlightbackground=self.current_theme["fg"], 
+                                highlightthickness=1)
+        header_frame.grid(row=0, column=column, sticky="ew", padx=1, pady=1)
+        
+        lbl = tk.Label(header_frame, text=text, font="Arial 8 bold", 
+                       bg=self.current_theme["btn_bg"], fg=self.current_theme["fg"])
+        lbl.pack(fill="x", padx=4, pady=2)
+        
+        if weight > 0:
+            parent.columnconfigure(column, weight=weight)
 
     def get_quantize_command(self):
         script_dir = os.path.dirname(os.path.abspath(__file__))
@@ -564,15 +578,18 @@ class ConverterApp:
                 try:
                     # 1. Containers
                     if isinstance(child, (tk.Frame, tk.LabelFrame, tk.PanedWindow, tk.Canvas)):
-                        # If it's a Canvas, we MUST set the background or we get grey gaps
+                        # Logic: Use frame_bg for LabelFrames, bg for everything else
                         bg_color = t["frame_bg"] if isinstance(child, tk.LabelFrame) else t["bg"]
+                        
+                        # Apply to the frame itself
                         child.configure(bg=bg_color)
                         
+                        # Apply special styling for specific frames
                         if isinstance(child, tk.LabelFrame):
                             child.configure(fg=t["label_fg"])
-                        if isinstance(child, tk.Canvas):
-                            child.configure(highlightthickness=0, borderwidth=0)
                         
+                        # IMPORTANT: Call walk_and_paint again on THIS child 
+                        # to ensure all entries/buttons inside this frame get hit
                         walk_and_paint(child)
                     
                     elif isinstance(child, tk.Label):
@@ -588,8 +605,7 @@ class ConverterApp:
                     # 4. Inputs
                     elif isinstance(child, tk.Entry):
                         child.configure(bg=t["entry_bg"], fg=t["entry_fg"], insertbackground=t["entry_fg"])
-                    elif isinstance(child, tk.Listbox):
-                        child.configure(bg=t["entry_bg"], fg=t["entry_fg"], selectbackground=t["label_fg"])
+                        child.configure(readonlybackground=t["entry_bg"])
                     
                     # 5. Checks/Radios
                     elif isinstance(child, (tk.Checkbutton, tk.Radiobutton)):
@@ -600,6 +616,10 @@ class ConverterApp:
                     # 6. Text/Logs
                     elif isinstance(child, (tk.Text, scrolledtext.ScrolledText)):
                         child.configure(bg=t["log_bg"], fg=t["log_fg"], insertbackground=t["log_fg"])
+
+                    # 7. Buttons
+                    elif isinstance(child, tk.Button):
+                        child.configure(bg=t["btn_bg"], fg=t["btn_fg"])
                 except:
                     pass
 
@@ -868,46 +888,88 @@ class ConverterApp:
 
     def build_local_table(self):
         for w in self.local_custom_frame.winfo_children(): w.destroy()
-        headers = ["File Name", "Output Path", "Remove"]
-        for c, h in enumerate(headers): 
-            tk.Label(self.local_custom_frame, text=h, font="Arial 8 bold").grid(row=0, column=c, sticky="ew", padx=1)
-        self.local_custom_frame.columnconfigure(1, weight=1)
+        
+        headers = ["File Name", "Output Path", "GGUF", "FP8", "Extra", "Remove"]
+        # Use a header builder to keep styling consistent
+        for c, h in enumerate(headers):
+            hdr = tk.Frame(self.local_custom_frame, bg=self.current_theme["btn_bg"], 
+                           highlightbackground=self.current_theme["fg"], highlightthickness=1)
+            hdr.grid(row=0, column=c, sticky="ew", padx=1, pady=1)
+            tk.Label(hdr, text=h, font="Arial 8 bold", bg=self.current_theme["btn_bg"], fg=self.current_theme["entry_fg"]).pack()
+        
+        # KEY CHANGE: 
+        # File Name (0) gets weight 0, it stays tight to the text width
+        # Output Path (1) gets weight 1, it expands to fill all remaining space
+        self.local_custom_frame.columnconfigure(0, weight=0) 
+        self.local_custom_frame.columnconfigure(1, weight=1) 
+        
         for i, fpath in enumerate(self.source_files):
             row = i + 1
-            self._ensure_file_data(fpath)
             dat = self.custom_file_data[fpath]
-            tk.Label(self.local_custom_frame, text=os.path.basename(fpath), width=50, anchor="w").grid(row=row, column=0, sticky="w", padx=2)
-            fr = tk.Frame(self.local_custom_frame)
+            
+            # 0. File Name: Dynamic width (no weight means it hugs the text)
+            fname = os.path.basename(fpath)
+            ent = tk.Entry(self.local_custom_frame, textvariable=tk.StringVar(value=fname), 
+                           bg=self.current_theme["entry_bg"], fg=self.current_theme["entry_fg"], 
+                           readonlybackground=self.current_theme["entry_bg"], relief="flat", borderwidth=0)
+            
+            # Calculate width based on text length, but with a minimum
+            ent.config(width=max(len(fname), 20), state="readonly")
+            ent.grid(row=row, column=0, sticky="w", padx=5) # sticky="w" (left align)
+            
+            # 1. Output Path: Fills available space
+            fr = tk.Frame(self.local_custom_frame, bg=self.current_theme["bg"])
             fr.grid(row=row, column=1, sticky="ew", padx=2)
-            tk.Entry(fr, textvariable=dat["out"]).pack(side="left", fill="x", expand=True)
-            tk.Button(fr, text="..", width=3, command=lambda d=dat: self.browse_file_out(d)).pack(side="right")
-            btn_rem = tk.Button(self.local_custom_frame, text="X", font="Arial 8 bold",
-                                command=lambda f=fpath: self.remove_single_file(f))
-            btn_rem.grid(row=row, column=2, padx=2, pady=1)
+            tk.Entry(fr, textvariable=dat["out"], relief="flat", bg=self.current_theme["entry_bg"], fg=self.current_theme["entry_fg"]).pack(side="left", fill="x", expand=True)
+            tk.Button(fr, text="..", width=3, bg=self.current_theme["btn_bg"], fg=self.current_theme["btn_fg"], command=lambda d=dat: self.browse_file_out(d)).pack(side="right")
+            
+            # 2-5. Flags & Remove
+            tk.Checkbutton(self.local_custom_frame, variable=dat["do_gguf"], bg=self.current_theme["bg"]).grid(row=row, column=2)
+            tk.Checkbutton(self.local_custom_frame, variable=dat["do_fp8"], bg=self.current_theme["bg"]).grid(row=row, column=3)
+            tk.Checkbutton(self.local_custom_frame, variable=dat["do_extra"], bg=self.current_theme["bg"]).grid(row=row, column=4)
+            tk.Button(self.local_custom_frame, text="X", bg=self.current_theme["btn_bg"], fg=self.current_theme["btn_fg"], command=lambda f=fpath: self.remove_single_file(f)).grid(row=row, column=5)
 
     def build_upload_table(self):
         for w in self.custom_upload_frame.winfo_children(): w.destroy()
         headers = ["File", "GGUF Repo", "GGUF Folder", "FP8 Repo", "FP8 Folder", "Remove"]
-        for c, h in enumerate(headers): 
-            tk.Label(self.custom_upload_frame, text=h, font="Arial 8 bold").grid(row=0, column=c, sticky="ew", padx=1)
-        for c in range(5): self.custom_upload_frame.columnconfigure(c, weight=1)
+        
+        # Configure Grid: File(0) + 4 columns of Repo/Folder(1,2,3,4) get weight=1, Remove(5) gets weight=0
+        for c in range(len(headers)):
+            self.custom_upload_frame.columnconfigure(c, weight=1 if c < 5 else 0)
+            
+        # Headers
+        for c, h in enumerate(headers):
+            hdr = tk.Frame(self.custom_upload_frame, bg=self.current_theme["btn_bg"], 
+                           highlightbackground=self.current_theme["fg"], highlightthickness=1)
+            hdr.grid(row=0, column=c, sticky="ew", padx=1, pady=1)
+            tk.Label(hdr, text=h, font="Arial 8 bold", bg=self.current_theme["btn_bg"], fg=self.current_theme["fg"]).pack()
+            
         for i, fpath in enumerate(self.source_files):
             row = i + 1
-            self._ensure_file_data(fpath)
             dat = self.custom_file_data[fpath]
-            tk.Label(self.custom_upload_frame, text=os.path.basename(fpath), width=30, anchor="w").grid(row=row, column=0, sticky="w", padx=1)
-            tk.Entry(self.custom_upload_frame, textvariable=dat["gguf_r"]).grid(row=row, column=1, sticky="ew", padx=1)
-            tk.Entry(self.custom_upload_frame, textvariable=dat["gguf_d"]).grid(row=row, column=2, sticky="ew", padx=1)
-            tk.Entry(self.custom_upload_frame, textvariable=dat["fp8_r"]).grid(row=row, column=3, sticky="ew", padx=1)
-            tk.Entry(self.custom_upload_frame, textvariable=dat["fp8_d"]).grid(row=row, column=4, sticky="ew", padx=1)
-            btn_rem = tk.Button(self.custom_upload_frame, text="X", font="Arial 8 bold",
-                                command=lambda f=fpath: self.remove_single_file(f))
-            btn_rem.grid(row=row, column=5, padx=2, pady=1)
+            
+            # File
+            ent = tk.Entry(self.custom_upload_frame, textvariable=tk.StringVar(value=os.path.basename(fpath)), 
+                           bg=self.current_theme["entry_bg"], fg=self.current_theme["fg"], 
+                           readonlybackground=self.current_theme["entry_bg"], relief="flat")
+            ent.config(state="readonly")
+            ent.grid(row=row, column=0, sticky="ew", padx=2)
+            
+            # Repos/Folders
+            for c, key in enumerate(["gguf_r", "gguf_d", "fp8_r", "fp8_d"], start=1):
+                tk.Entry(self.custom_upload_frame, textvariable=dat[key], 
+                         bg=self.current_theme["entry_bg"], fg=self.current_theme["entry_fg"], relief="flat").grid(row=row, column=c, sticky="ew", padx=2)
+            
+            # Remove
+            tk.Button(self.custom_upload_frame, text="X", bg=self.current_theme["btn_bg"], fg=self.current_theme["btn_fg"], command=lambda f=fpath: self.remove_single_file(f)).grid(row=row, column=5)
 
     def _ensure_file_data(self, fpath):
         if fpath not in self.custom_file_data:
             self.custom_file_data[fpath] = {
                 "out": tk.StringVar(value=os.path.dirname(fpath)),
+                "do_gguf": tk.BooleanVar(value=False),
+                "do_fp8": tk.BooleanVar(value=False),
+                "do_extra": tk.BooleanVar(value=False),
                 "gguf_r": tk.StringVar(value=self.hf_repo_gguf.get()),
                 "gguf_d": tk.StringVar(value=self.hf_dest_gguf.get()),
                 "fp8_r": tk.StringVar(value=self.hf_repo_fp8.get()),
@@ -1125,7 +1187,12 @@ class ConverterApp:
             batch_results = []
             for f in self.source_files:
                 if self.stop_requested: break
-                
+
+                dat = self.custom_file_data.get(f, {})
+                do_gguf_file = dat["do_gguf"].get() if "do_gguf" in dat else True
+                do_fp8_file = dat["do_fp8"].get() if "do_fp8" in dat else True
+                do_extra_file = dat["do_extra"].get() if "do_extra" in dat else True
+
                 fix_file = "fix_5d_tensors_wan.safetensors"
                 if os.path.exists(fix_file):
                     try: os.remove(fix_file)
@@ -1164,112 +1231,115 @@ class ConverterApp:
                 do_ext_v = self.quant_vars_gen.get("VAE", tk.BooleanVar()).get()
                 do_ext_c = self.quant_vars_gen.get("CLIP", tk.BooleanVar()).get()
 
-                if (do_ext_m or do_ext_c or do_ext_v) and f.lower().endswith(".safetensors"):
-                    self.msg_queue.put(("UPDATE_GRID", model_base, "Extracting", "RUNNING"))
-                    ext_cmd = [sys.executable, "extract_components.py", "--src", f, "--dst_dir", out_dir]
-                    if do_ext_m: ext_cmd.append("--model")
-                    if do_ext_c: ext_cmd.append("--clip")
-                    if do_ext_v: ext_cmd.append("--vae")
-                    
-                    if self.run_cmd(ext_cmd):
-                        self.msg_queue.put(("UPDATE_GRID", model_base, "Extracting", "DONE"))
-                        # Granular updates for components
-                        if do_ext_m: self.msg_queue.put(("UPDATE_GRID", model_base, "MODEL", "DONE"))
-                        if do_ext_v: self.msg_queue.put(("UPDATE_GRID", model_base, "VAE", "DONE"))
-                        if do_ext_c: self.msg_queue.put(("UPDATE_GRID", model_base, "CLIP", "DONE"))
+                if do_extra_file and f.lower().endswith(".safetensors"):
+                    if (do_ext_m or do_ext_c or do_ext_v) and f.lower().endswith(".safetensors"):
+                        self.msg_queue.put(("UPDATE_GRID", model_base, "Extracting", "RUNNING"))
+                        ext_cmd = [sys.executable, "extract_components.py", "--src", f, "--dst_dir", out_dir]
+                        if do_ext_m: ext_cmd.append("--model")
+                        if do_ext_c: ext_cmd.append("--clip")
+                        if do_ext_v: ext_cmd.append("--vae")
                         
-                        extracted = glob.glob(os.path.join(out_dir, f"{name}_*.safetensors"))
-                        generated_files.extend(extracted)
-                    else:
-                        self.msg_queue.put(("UPDATE_GRID", model_base, "Extracting", "ERROR"))
+                        if self.run_cmd(ext_cmd):
+                            self.msg_queue.put(("UPDATE_GRID", model_base, "Extracting", "DONE"))
+                            # Granular updates for components
+                            if do_ext_m: self.msg_queue.put(("UPDATE_GRID", model_base, "MODEL", "DONE"))
+                            if do_ext_v: self.msg_queue.put(("UPDATE_GRID", model_base, "VAE", "DONE"))
+                            if do_ext_c: self.msg_queue.put(("UPDATE_GRID", model_base, "CLIP", "DONE"))
+                            
+                            extracted = glob.glob(os.path.join(out_dir, f"{name}_*.safetensors"))
+                            generated_files.extend(extracted)
+                        else:
+                            self.msg_queue.put(("UPDATE_GRID", model_base, "Extracting", "ERROR"))
 
                 # --- FP8 Logic ---
-                fp8_variants = ["FP8_E5M2", "FP8_E5M2 (All)", "FP8_E4M3FN", "FP8_E4M3FN (All)"]
-                active_fp8 = [v for v in fp8_variants if (v in gen_list or v in up_list)]
-                for q in active_fp8:
-                    if self.stop_requested: break
-                    self.msg_queue.put(("UPDATE_GRID", model_base, q, "RUNNING"))
-                        
-                    suffix = "_All" if "All" in q else ""
-                    dtype_str = "float8_e5m2" if "E5M2" in q else "float8_e4m3fn"
-                    expected_path = os.path.join(out_dir, f"{name}-{q.split()[0]}{suffix}.safetensors")
-                        
-                    if q in gen_list:
-                        try:
-                            qzer = FP8Quantizer(dtype_str)
-                            ok = qzer.apply_quantization_to_file(f, expected_path, unet_only=("All" not in q), check_stop_func=lambda: self.stop_requested)
-                            if ok: 
-                                generated_files.append(expected_path)
-                                self.msg_queue.put(("UPDATE_GRID", model_base, q, "DONE"))
-                            else: self.msg_queue.put(("UPDATE_GRID", model_base, q, "CANCEL"))
-                        except Exception as e:
-                            logging.error(f"FP8 Error: {e}")
-                            self.msg_queue.put(("UPDATE_GRID", model_base, q, "ERROR"))
-                    elif os.path.exists(expected_path):
-                        generated_files.append(expected_path)
-                        self.msg_queue.put(("UPDATE_GRID", model_base, q, "DONE"))
-
-                # --- GGUF Logic ---
-                raw_combined = gen_list + up_list
-                unique_tasks = list(set(raw_combined))
-                gguf_order = ["Q2_K", "Q3_K_S", "Q3_K_M", "Q3_K_L", "Q4_0", "Q4_K_S", "Q4_K_M", 
-                              "Q5_0", "Q5_K_S", "Q5_K_M", "Q6_K", "Q8_0", "BF16", "F16"]
-                raw_combined = gen_list + up_list
-                all_gguf_active = [q for q in gguf_order if q in raw_combined]
-                if all_gguf_active:
-                    gguf_gen_needed = [q for q in all_gguf_active if q in gen_list]
-                    gguf_src = None
-                    if gguf_gen_needed:
-                        if self.stop_requested: break
-                        self.msg_queue.put(("UPDATE_GRID", model_base, "GGUF Prep", "RUNNING"))
-                        if f.lower().endswith(".safetensors"):
-                            curr = f
-                            dq = os.path.join(out_dir, f"{name}-dequant.safetensors")
-                            if os.path.exists("dequantize_fp8v2.py"):
-                                self.run_cmd([sys.executable, "-u", "dequantize_fp8v2.py", "--src", f, "--dst", dq, "--strip-fp8", "--dtype", "fp16"])
-                                if os.path.exists(dq): curr = dq; generated_files.append(dq)
-                            conv = os.path.join(out_dir, f"{name}-CONVERT.gguf")
-                            self.run_cmd([sys.executable, "-u", "convert.py", "--src", curr, "--dst", conv])
-                            if os.path.exists(conv): gguf_src = conv; generated_files.append(conv)
-                        elif f.lower().endswith(".gguf"): gguf_src = f
-                        if gguf_src: self.msg_queue.put(("UPDATE_GRID", model_base, "GGUF Prep", "DONE"))
-                        else: self.msg_queue.put(("UPDATE_GRID", model_base, "GGUF Prep", "ERROR"))
-                    
-                    for q in all_gguf_active:
+                if do_fp8_file:
+                    fp8_variants = ["FP8_E5M2", "FP8_E5M2 (All)", "FP8_E4M3FN", "FP8_E4M3FN (All)"]
+                    active_fp8 = [v for v in fp8_variants if (v in gen_list or v in up_list)]
+                    for q in active_fp8:
                         if self.stop_requested: break
                         self.msg_queue.put(("UPDATE_GRID", model_base, q, "RUNNING"))
-                        expected_path = os.path.join(out_dir, f"{name}-{q}.gguf")
+                            
+                        suffix = "_All" if "All" in q else ""
+                        dtype_str = "float8_e5m2" if "E5M2" in q else "float8_e4m3fn"
+                        expected_path = os.path.join(out_dir, f"{name}-{q.split()[0]}{suffix}.safetensors")
+                            
                         if q in gen_list:
-                            if not gguf_src: 
-                                self.msg_queue.put(("UPDATE_GRID", model_base, q, "SKIP"))
-                                continue
-                            if q in ["F16", "BF16"]:
-                                try:
-                                    shutil.copy(gguf_src, expected_path)
+                            try:
+                                qzer = FP8Quantizer(dtype_str)
+                                ok = qzer.apply_quantization_to_file(f, expected_path, unet_only=("All" not in q), check_stop_func=lambda: self.stop_requested)
+                                if ok: 
                                     generated_files.append(expected_path)
                                     self.msg_queue.put(("UPDATE_GRID", model_base, q, "DONE"))
-                                except: self.msg_queue.put(("UPDATE_GRID", model_base, q, "ERROR"))
-                                continue
-                            unfixed = os.path.join(out_dir, f"{name}-{q}-UnFixed.gguf")
-                            if self.run_cmd([self.quant_cmd, gguf_src, unfixed, q]):
-                                final = unfixed
-                                fixes = glob.glob(os.path.join(out_dir, "fix_5d_tensors_*.safetensors"))
-                                if fixes:
-                                    fixed = os.path.join(out_dir, f"{name}-{q}-FIXED.gguf")
-                                    self.run_cmd([sys.executable, "-u", "fix_5d_tensors.py", "--src", unfixed, "--dst", fixed, "--fix", fixes[0], "--overwrite"])
-                                    if os.path.exists(fixed): final = fixed
-                                try: os.rename(final, expected_path); generated_files.append(expected_path)
-                                except: generated_files.append(final)
-                                if os.path.exists(unfixed) and os.path.abspath(unfixed) != os.path.abspath(expected_path):
-                                    try: os.remove(unfixed)
-                                    except: pass
-                                self.msg_queue.put(("UPDATE_GRID", model_base, q, "DONE"))
-                            else: self.msg_queue.put(("UPDATE_GRID", model_base, q, "ERROR"))
-                        elif q in up_list:
-                            if os.path.exists(expected_path):
-                                generated_files.append(expected_path)
-                                self.msg_queue.put(("UPDATE_GRID", model_base, q, "DONE"))
-                            else: self.msg_queue.put(("UPDATE_GRID", model_base, q, "SKIP"))
+                                else: self.msg_queue.put(("UPDATE_GRID", model_base, q, "CANCEL"))
+                            except Exception as e:
+                                logging.error(f"FP8 Error: {e}")
+                                self.msg_queue.put(("UPDATE_GRID", model_base, q, "ERROR"))
+                        elif os.path.exists(expected_path):
+                            generated_files.append(expected_path)
+                            self.msg_queue.put(("UPDATE_GRID", model_base, q, "DONE"))
+
+                # --- GGUF Logic ---
+                if do_gguf_file:
+                    raw_combined = gen_list + up_list
+                    unique_tasks = list(set(raw_combined))
+                    gguf_order = ["Q2_K", "Q3_K_S", "Q3_K_M", "Q3_K_L", "Q4_0", "Q4_K_S", "Q4_K_M", 
+                                "Q5_0", "Q5_K_S", "Q5_K_M", "Q6_K", "Q8_0", "BF16", "F16"]
+                    raw_combined = gen_list + up_list
+                    all_gguf_active = [q for q in gguf_order if q in raw_combined]
+                    if all_gguf_active:
+                        gguf_gen_needed = [q for q in all_gguf_active if q in gen_list]
+                        gguf_src = None
+                        if gguf_gen_needed:
+                            if self.stop_requested: break
+                            self.msg_queue.put(("UPDATE_GRID", model_base, "GGUF Prep", "RUNNING"))
+                            if f.lower().endswith(".safetensors"):
+                                curr = f
+                                dq = os.path.join(out_dir, f"{name}-dequant.safetensors")
+                                if os.path.exists("dequantize_fp8v2.py"):
+                                    self.run_cmd([sys.executable, "-u", "dequantize_fp8v2.py", "--src", f, "--dst", dq, "--strip-fp8", "--dtype", "fp16"])
+                                    if os.path.exists(dq): curr = dq; generated_files.append(dq)
+                                conv = os.path.join(out_dir, f"{name}-CONVERT.gguf")
+                                self.run_cmd([sys.executable, "-u", "convert.py", "--src", curr, "--dst", conv])
+                                if os.path.exists(conv): gguf_src = conv; generated_files.append(conv)
+                            elif f.lower().endswith(".gguf"): gguf_src = f
+                            if gguf_src: self.msg_queue.put(("UPDATE_GRID", model_base, "GGUF Prep", "DONE"))
+                            else: self.msg_queue.put(("UPDATE_GRID", model_base, "GGUF Prep", "ERROR"))
+                    
+                        for q in all_gguf_active:
+                            if self.stop_requested: break
+                            self.msg_queue.put(("UPDATE_GRID", model_base, q, "RUNNING"))
+                            expected_path = os.path.join(out_dir, f"{name}-{q}.gguf")
+                            if q in gen_list:
+                                if not gguf_src: 
+                                    self.msg_queue.put(("UPDATE_GRID", model_base, q, "SKIP"))
+                                    continue
+                                if q in ["F16", "BF16"]:
+                                    try:
+                                        shutil.copy(gguf_src, expected_path)
+                                        generated_files.append(expected_path)
+                                        self.msg_queue.put(("UPDATE_GRID", model_base, q, "DONE"))
+                                    except: self.msg_queue.put(("UPDATE_GRID", model_base, q, "ERROR"))
+                                    continue
+                                unfixed = os.path.join(out_dir, f"{name}-{q}-UnFixed.gguf")
+                                if self.run_cmd([self.quant_cmd, gguf_src, unfixed, q]):
+                                    final = unfixed
+                                    fixes = glob.glob(os.path.join(out_dir, "fix_5d_tensors_*.safetensors"))
+                                    if fixes:
+                                        fixed = os.path.join(out_dir, f"{name}-{q}-FIXED.gguf")
+                                        self.run_cmd([sys.executable, "-u", "fix_5d_tensors.py", "--src", unfixed, "--dst", fixed, "--fix", fixes[0], "--overwrite"])
+                                        if os.path.exists(fixed): final = fixed
+                                    try: os.rename(final, expected_path); generated_files.append(expected_path)
+                                    except: generated_files.append(final)
+                                    if os.path.exists(unfixed) and os.path.abspath(unfixed) != os.path.abspath(expected_path):
+                                        try: os.remove(unfixed)
+                                        except: pass
+                                    self.msg_queue.put(("UPDATE_GRID", model_base, q, "DONE"))
+                                else: self.msg_queue.put(("UPDATE_GRID", model_base, q, "ERROR"))
+                            elif q in up_list:
+                                if os.path.exists(expected_path):
+                                    generated_files.append(expected_path)
+                                    self.msg_queue.put(("UPDATE_GRID", model_base, q, "DONE"))
+                                else: self.msg_queue.put(("UPDATE_GRID", model_base, q, "SKIP"))
 
                 generated_files = list(set(generated_files))
                 res_obj = { "name": name, "files": generated_files, "model_display": model_base, "src_path": f }
@@ -1495,6 +1565,9 @@ class ConverterApp:
         for path, data in self.custom_file_data.items():
             serializable_custom_data[path] = {
                 "out": data["out"].get(),
+                "do_gguf": data["do_gguf"].get(),
+                "do_fp8": data["do_fp8"].get(),
+                "do_extra": data["do_extra"].get(),
                 "gguf_r": data["gguf_r"].get(),
                 "gguf_d": data["gguf_d"].get(),
                 "fp8_r": data["fp8_r"].get(),
@@ -1564,6 +1637,9 @@ class ConverterApp:
                 for path, data in d["custom_file_data"].items():
                     self.custom_file_data[path] = {
                         "out": tk.StringVar(value=data.get("out", "")),
+                        "do_gguf": tk.BooleanVar(value=data.get("do_gguf", False)),
+                        "do_fp8": tk.BooleanVar(value=data.get("do_fp8", False)),
+                        "do_extra": tk.BooleanVar(value=data.get("do_extra", False)),
                         "gguf_r": tk.StringVar(value=data.get("gguf_r", "")),
                         "gguf_d": tk.StringVar(value=data.get("gguf_d", "")),
                         "fp8_r": tk.StringVar(value=data.get("fp8_r", "")),
