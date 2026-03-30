@@ -905,6 +905,7 @@ class ConverterApp:
         
         for i, fpath in enumerate(self.source_files):
             row = i + 1
+            self._ensure_file_data(fpath)
             dat = self.custom_file_data[fpath]
             
             # 0. File Name: Dynamic width (no weight means it hugs the text)
@@ -946,6 +947,7 @@ class ConverterApp:
             
         for i, fpath in enumerate(self.source_files):
             row = i + 1
+            self._ensure_file_data(fpath)
             dat = self.custom_file_data[fpath]
             
             # File
@@ -986,6 +988,7 @@ class ConverterApp:
             norm = os.path.normpath(f)
             if norm not in self.source_files:
                 self.source_files.append(norm)
+                self._ensure_file_data(norm)
         self.refresh_file_list_ui()
         if self.upload_mode_var.get() == "custom": self.refresh_upload_ui()
 
@@ -1632,6 +1635,8 @@ class ConverterApp:
             # 2. Source Files & Custom Data (Crucial for the Routing Tables)
             if "source_files" in d: 
                 self.source_files = d["source_files"]
+                for path in self.source_files:
+                    self._ensure_file_data(path)
             
             if "custom_file_data" in d:
                 for path, data in d["custom_file_data"].items():
