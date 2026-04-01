@@ -8,8 +8,6 @@ This tool was designed to work in both Windows and Linux environments.
 
 All the scripts were based, or are coming from, https://github.com/city96/ComfyUI-GGUF/tree/main/tools and https://github.com/Kickbub/Dequant-FP8-ComfyUI/blob/main/dequantize_fp8v2.py
 
-**In this repo, I have the `llama-quantize` ready for linux and AMD CPU, and `llama-quantize.exe` ready for Windows and AMD CPU. For Intel CPU, you might need to generate it again, it is pretty simple if you follow the steps on https://github.com/city96/ComfyUI-GGUF/tree/main/tools**
-
 ## 🚀 Features
 - **No CLI Required**: Fully graphical interface for all conversion steps.
 - **HuggingFace Integration**: Easily select downloaded models from your local storage.
