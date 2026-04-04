@@ -4,7 +4,15 @@ Before starting, you will need two additional things:
 - A way to connect to the VNC Server, I'm familiar with MobaXterm, so that's what I'm doing
 - Add port `5901` to the exposed TCP ports of the pod.
 
-You can copy paste the following code to setup evertything, or you can do a `wget` for the [RunPod_StartUp.sh](Utils/RunPod_StartUp.sh)
+You can copy paste the following code to setup evertything, or you can do a `wget` for the [RunPod_StartUp.sh](Utils/RunPod_StartUp.sh) and that way, you only need to runt he following commands:
+```
+wget -N https://raw.githubusercontent.com/Santodan/GGUF-Converter-GUI/refs/heads/main/gui_run_conversion.py
+wget -N https://raw.githubusercontent.com/Santodan/GGUF-Converter-GUI/refs/heads/main/Utils/RunPod_StartUp.sh
+chmod +x RunPod_StartUp.sh
+./RunPod_StartUp.sh
+```
+
+Full script:
 ```
 #!/bin/bash
 set -euo pipefail
