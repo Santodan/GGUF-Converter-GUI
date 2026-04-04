@@ -1,11 +1,3 @@
-# How to runt he script in RunPod
-
-Before starting, you will need two additional things:
-- A way to connect to the VNC Server, I'm familiar with MobaXterm, so that's what I'm doing
-- Add port `5901` to the exposed TCP ports of the pod.
-
-You can copy paste the following code to setup evertything, or you can do a `wget` for the [RunPod_StartUp.sh](Utils/RunPod_StartUp.sh)
-```
 #!/bin/bash
 set -euo pipefail
 
@@ -79,4 +71,3 @@ echo ""
 
 # Replace the current shell with a log follower (no prompt)
 exec tail -n 200 -f /tmp/gguf_gui.log
-```

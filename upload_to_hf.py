@@ -5,6 +5,23 @@ import argparse
 import time
 from datetime import datetime
 
+
+def configure_windows_console_utf8():
+    if os.name != "nt":
+        return
+    try:
+        import ctypes
+        kernel32 = ctypes.windll.kernel32
+        kernel32.SetConsoleOutputCP(65001)
+        kernel32.SetConsoleCP(65001)
+    except Exception:
+        pass
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+        sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
+
 # --- ENVIRONMENT OVERRIDES (Matching your successful manual test) ---
 os.environ["HF_XET_HIGH_PERFORMANCE"] = "1"
 os.environ["HF_HUB_DISABLE_XET"] = "1"
@@ -73,4 +90,5 @@ def upload_to_hf():
             print(f"      ⚠️  Unexpected Error: {e}")
 
 if __name__ == "__main__":
+    configure_windows_console_utf8()
     upload_to_hf()

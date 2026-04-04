@@ -1547,8 +1547,15 @@ class ConverterApp:
                     break
                 
                 if chunk:
-                    os.write(1, chunk)
                     text_data = chunk.decode('utf-8', errors='replace')
+                    # Write Unicode text to console to avoid mojibake from raw UTF-8 bytes in CMD.
+                    out = sys.__stdout__ or sys.stdout
+                    if out:
+                        try:
+                            out.write(text_data)
+                            out.flush()
+                        except Exception:
+                            pass
                     if log_file:
                         log_file.write(text_data)
                         log_file.flush()
