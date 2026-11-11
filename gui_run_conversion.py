@@ -16,6 +16,7 @@ import urllib.request
 from datetime import datetime
 import math
 import importlib.util
+import importlib.metadata
 
 global THEMES
 THEMES = {
@@ -77,12 +78,21 @@ check_and_restart_in_venv()
 
 def ensure_dependencies():
     """Checks for required packages and installs them if missing."""
+    if sys.version_info >= (3, 14):
+        numpy_requirement = "numpy>=2.3.3,<3"
+        numpy_minimum = (2, 3, 3)
+    elif sys.version_info >= (3, 13):
+        numpy_requirement = "numpy>=2.1,<3"
+        numpy_minimum = (2, 1, 0)
+    else:
+        numpy_requirement = "numpy==1.26.4"
+        numpy_minimum = None
     dependencies = {
         "safetensors": "safetensors",
         "huggingface_hub[cli]": "huggingface_hub",
         "tqdm": "tqdm",
         "sentencepiece": "sentencepiece",
-        "numpy==1.26.4": "numpy",
+        numpy_requirement: "numpy",
         "gguf": "gguf",
         "requests": "requests",
         "torch": "torch",
@@ -93,18 +103,31 @@ def ensure_dependencies():
         if spec is None:
             missing_or_wrong.append(pkg_pip)
         else:
-            if "numpy==1.26.4" in pkg_pip:
+            if mod_name == "numpy":
                 try:
-                    import numpy
-                    if numpy.__version__ != "1.26.4":
+                    version = importlib.metadata.version("numpy")
+                    if numpy_minimum is None:
+                        compatible = version == "1.26.4"
+                    else:
+                        release = tuple(int(part) for part in version.split(".")[:3])
+                        compatible = numpy_minimum <= release < (3, 0, 0)
+                    if not compatible:
                         missing_or_wrong.append(pkg_pip)
-                except: missing_or_wrong.append(pkg_pip)
+                except (importlib.metadata.PackageNotFoundError, ValueError):
+                    missing_or_wrong.append(pkg_pip)
     if missing_or_wrong:
         print(f"[INFO] Installing dependencies: {', '.join(missing_or_wrong)}...")
         try:
             subprocess.check_call([sys.executable, "-m", "pip", "install"] + missing_or_wrong)
         except Exception as e:
-            print(f"[ERROR] Pip failed: {e}")
+            raise SystemExit(f"[ERROR] Dependency installation failed: {e}") from e
+    # Check in a fresh process so a failed NumPy import cannot contaminate the GUI.
+    result = subprocess.run([sys.executable, "-c", "import numpy; import torch"])
+    if result.returncode:
+        raise SystemExit(
+            "[ERROR] NumPy/PyTorch failed to import. Repair the packages in "
+            f"{sys.executable} before restarting the GUI."
+        )
 
 ensure_dependencies()
 
